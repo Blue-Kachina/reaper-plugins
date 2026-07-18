@@ -1,0 +1,392 @@
+desc:MIDI Echo
+
+// @description
+// A MIDI Delay/Echo Plugin.
+//
+// @author Blue Kachina
+// @version 1.0.0
+// @changelog
+//   Initial ReaPack release.
+//
+// @about
+//   Like an audio-echo/delay, but in MIDI form. Allows subsequent echoes to change pitch/velocity.
+
+
+
+author:Duder
+version:2.0
+tags: MIDI echo delay
+
+// ---------------------------------------------------------------
+// Required Phil Ranger Audio Library files.
+// Place this .jsfx in the same folder as:
+//   philranger_GUI and Audio Library/PhilRangerAudioLibraryAlpha5.jsfx-inc
+//   philranger_GUI and Audio Library/Knob.png
+//   philranger_GUI and Audio Library/Switch.png
+// ---------------------------------------------------------------
+provides:
+  philranger_GUI and Audio Library/PhilRangerAudioLibraryAlpha5.jsfx-inc
+  philranger_GUI and Audio Library/Highlight.png
+  philranger_GUI and Audio Library/Knob.png
+  philranger_GUI and Audio Library/Switch.png
+
+import PhilRangerAudioLibraryAlpha5.jsfx-inc
+
+filename:0,philranger_GUI and Audio Library/Highlight.png
+filename:1,philranger_GUI and Audio Library/Knob.png
+filename:2,philranger_GUI and Audio Library/Switch.png
+
+// ---------------------------------------------------------------
+// Sliders — hidden from REAPER default UI, managed by GUI
+//
+// Timefraction index map (shared by Delay, Length):
+//   0=4x  1=2x  2=2x.  3=2xT  4=1x  5=1x.  6=1xT
+//   7=1/2  8=1/2.  9=1/2T  10=1/4  11=1/4.  12=1/4T
+//   13=1/8  14=1/8.  15=1/8T  16=1/16  17=1/16.  18=1/16T
+//   19=1/32  20=1/32.  21=1/32T  22=1/64
+//
+// Beat Align prepends index 0=Off, so its range is 0–23.
+// ---------------------------------------------------------------
+slider1:repeats=2<0,16,1>-Repeats
+slider2:delay_div=10<0,22,1>-Delay Division
+slider3:length_div=10<0,22,1>-Length Division
+slider4:beat_align_div=0<0,23,1>-Beat Align Division
+slider5:delay_decay=100<1,200,1>-Delay Decay (%)
+slider6:length_decay=100<1,200,1>-Length Decay (%)
+slider7:pitch_offset=0<-24,24,1>-Pitch Offset (semitones)
+slider8:vel_offset=0<-36,36,1>-Velocity Offset
+
+in_pin:none
+out_pin:none
+
+// ---------------------------------------------------------------
+@init
+// ---------------------------------------------------------------
+
+  ext_midi_bus = 1;   // preserve MIDI bus routing
+
+  // --- Slider proxy objects ---
+  sRepeats   = PR.NewSlider(1,  2,   0,  16);
+  sDelayDiv  = PR.NewSlider(2, 10,   0,  22);
+  sLengthDiv = PR.NewSlider(3, 10,   0,  22);
+  sAlignDiv  = PR.NewSlider(4,  0,   0,  23);
+  sDelDecay  = PR.NewSlider(5, 100,  1, 200);
+  sLenDecay  = PR.NewSlider(6, 100,  1, 200);
+  sPitchOff  = PR.NewSlider(7,  0, -24,  24);
+  sVelOff    = PR.NewSlider(8,  0, -36,  36);
+
+  // --- Timefraction display names — split into groups (PR.NewList max = 10, min = 7) ---
+  // divN1: idx 0–9   divN2: idx 10–18   divN3: idx 19–22 (padded to 7)
+  divN1 = PR.NewList("4x","2x","2xD","2xT","1x","1xD","1xT","1/2","1/2D","1/2T");
+  divN2 = PR.NewList("1/4","1/4D","1/4T","1/8","1/8D","1/8T","1/16","1/16D","1/16T");
+  divN3 = PR.NewList("1/32","1/32D","1/32T","1/64","","","");
+
+  // --- Beat Align display names — "Off" prepended, same split ---
+  // aliN1: idx 0–9   aliN2: idx 10–18   aliN3: idx 19–23 (padded to 7)
+  aliN1 = PR.NewList("Off","4x","2x","2xD","2xT","1x","1xD","1xT","1/2","1/2D");
+  aliN2 = PR.NewList("1/2T","1/4","1/4D","1/4T","1/8","1/8D","1/8T","1/16","1/16D");
+  aliN3 = PR.NewList("1/16T","1/32","1/32D","1/32T","1/64","","");
+
+  // --- Timefraction beat multipliers (quarter-note beats per division) ---
+  // Stored well above PR library heap region (~<1000 slots)
+  DIV_M = 32768;
+  DIV_M[0]  = 16.0;           // 4x
+  DIV_M[1]  =  8.0;           // 2x
+  DIV_M[2]  = 12.0;           // 2x. (dotted)
+  DIV_M[3]  = 16.0/3.0;       // 2xT (triplet)
+  DIV_M[4]  =  4.0;           // 1x
+  DIV_M[5]  =  6.0;           // 1x.
+  DIV_M[6]  =  8.0/3.0;       // 1xT
+  DIV_M[7]  =  2.0;           // 1/2
+  DIV_M[8]  =  3.0;           // 1/2.
+  DIV_M[9]  =  4.0/3.0;       // 1/2T
+  DIV_M[10] =  1.0;           // 1/4 (one beat)
+  DIV_M[11] =  1.5;           // 1/4.
+  DIV_M[12] =  2.0/3.0;       // 1/4T
+  DIV_M[13] =  0.5;           // 1/8
+  DIV_M[14] =  0.75;          // 1/8.
+  DIV_M[15] =  1.0/3.0;       // 1/8T
+  DIV_M[16] =  0.25;          // 1/16
+  DIV_M[17] =  0.375;         // 1/16.
+  DIV_M[18] =  1.0/6.0;       // 1/16T
+  DIV_M[19] =  0.125;         // 1/32
+  DIV_M[20] =  0.1875;        // 1/32.
+  DIV_M[21] =  1.0/12.0;      // 1/32T
+  DIV_M[22] =  0.0625;        // 1/64
+
+  // --- Event buffer: [abs_sample_time, msg1, note, velocity] ---
+  EVT_BUF     = 32800;
+  EVT_SIZE    = 4;
+  MAX_EVTS    = 512;
+  event_count = 0;
+
+  // ECHO_N[orig_note * 16 + echo_idx] = pitched note sent for that echo
+  ECHO_N   = EVT_BUF + MAX_EVTS * EVT_SIZE;   // 34848
+  NOTE_TON = ECHO_N  + 128 * 16;              // 36896
+
+  memset(ECHO_N,   0, 128 * 16);
+  memset(NOTE_TON, 0, 128);
+
+  sample_pos = 0;
+
+  // GUI drag-lock state
+  drag_owner = 0;   // slider number that owns the current drag (0 = none)
+  prev_lmb   = 0;   // left mouse button state last frame
+
+// ---------------------------------------------------------------
+@block
+// ---------------------------------------------------------------
+
+  beat_s = 60.0 / max(tempo, 1.0) * srate;
+
+  // Base delay in samples
+  di     = max(0, min(22, floor(delay_div + 0.5)));
+  base_d = beat_s * DIV_M[di];
+  base_d = max(base_d, 64);
+
+  // Base note length in samples
+  li       = max(0, min(22, floor(length_div + 0.5)));
+  base_len = beat_s * DIV_M[li];
+  base_len = max(base_len, 64);
+
+  // Beat align grid in samples (ai=0 means off)
+  ai = max(0, min(23, floor(beat_align_div + 0.5)));
+  ai > 0 ? (
+    align_grid = beat_s * DIV_M[ai - 1];   // -1: slider 0 = Off
+    align_grid = max(align_grid, 64);
+  ) : (
+    align_grid = 0;
+  );
+
+  // ---- Flush events that fall within this block ----
+  blk_end = sample_pos + samplesblock;
+  i = 0;
+  while (i < event_count) (
+    ep = EVT_BUF + i * EVT_SIZE;
+    ep[0] < blk_end ? (
+      off = max(0, min(samplesblock - 1, floor(ep[0] - sample_pos)));
+      midisend(off, ep[1], ep[2], ep[3]);
+      // Compact: shift all entries above i down one slot
+      j = i;
+      while (j < event_count - 1) (
+        sp2 = EVT_BUF + (j+1)*EVT_SIZE;
+        dp2 = EVT_BUF + j*EVT_SIZE;
+        dp2[0]=sp2[0]; dp2[1]=sp2[1]; dp2[2]=sp2[2]; dp2[3]=sp2[3];
+        j += 1;
+      );
+      event_count -= 1;
+      // Do NOT increment i — the promoted slot may also be due
+    ) : (
+      i += 1;
+    );
+  );
+
+  // ---- Receive MIDI and schedule echoes ----
+  while (midirecv(msg_off, msg1, msg2, msg3)) (
+    midisend(msg_off, msg1, msg2, msg3);   // pass original through immediately
+
+    ch    = msg1 & 0x0F;
+    st    = msg1 & 0xF0;
+    abs_t = sample_pos + msg_off;
+
+    // Note-on: schedule echo note-ons with fixed-length note-offs
+    st == 0x90 && msg3 > 0 ? (
+      note = msg2;
+      vel  = msg3;
+      NOTE_TON[note] = abs_t;
+
+      // Snap offsets to integers now — PR writes fractional slider values,
+      // and a fractional multiplier * e produces irregular step sizes when
+      // truncated to MIDI integers (e.g. -1.5 * e gives steps of -1, -2, -1, -2…)
+      pi = floor(pitch_offset + 0.5);
+      vi = floor(vel_offset   + 0.5);
+
+      cum = 0;
+      e   = 1;
+      while (e <= repeats) (
+        // e=1 → interval = base_d * decay^0 = base_d (unscaled first echo)
+        // e=2 → interval = base_d * decay^1, etc.
+        interval = base_d * pow(delay_decay / 100.0, e - 1);
+        cum += interval;
+        t    = abs_t + floor(cum);
+
+        // Snap onset to beat-align grid if enabled
+        align_grid > 0 ? (
+          t = floor((t + align_grid * 0.5) / align_grid) * align_grid;
+        );
+
+        ev = max(1, min(127, vel  + vi * e));
+        en = max(0, min(127, note + pi * e));
+        ECHO_N[note * 16 + (e - 1)] = en;
+
+        // Note-on
+        event_count < MAX_EVTS ? (
+          ep = EVT_BUF + event_count * EVT_SIZE;
+          ep[0] = t;  ep[1] = 0x90|ch;  ep[2] = en;  ep[3] = ev;
+          event_count += 1;
+        );
+
+        // Note-off at t + length (with per-echo length decay)
+        len_e = base_len * pow(length_decay / 100.0, e - 1);
+        len_e = max(len_e, 64);
+        event_count < MAX_EVTS ? (
+          ep = EVT_BUF + event_count * EVT_SIZE;
+          ep[0] = t + floor(len_e);  ep[1] = 0x80|ch;  ep[2] = en;  ep[3] = 0;
+          event_count += 1;
+        );
+
+        e += 1;
+      );
+    );
+    // Original note-offs pass through immediately (already sent above).
+    // Echo note-offs are pre-scheduled alongside each echo note-on.
+  );
+
+  sample_pos += samplesblock;
+
+// ---------------------------------------------------------------
+// @gfx 420 420
+// Square window so PR lib's min(w,h) coordinate system fills fully.
+// ---------------------------------------------------------------
+@gfx 420 420
+
+  // ---- Drag-owner lock ------------------------------------------------
+  // Control IDs match slider numbers:
+  //   1=Repeats  2=Delay  3=Length  4=BeatAlign
+  //   5=DlyDecay  6=LenDecay  7=Pitch  8=Velocity
+  // Rotary switches: center y=37, half-size=8.5
+  // Knobs:           center y=75, half-size=6.5
+  // ---------------------------------------------------------------------
+  lmb = mouse_cap & 1;
+
+  !prev_lmb && lmb ? (
+    s  = min(gfx_w, gfx_h);
+    mx = mouse_x * 100 / s;
+    my = mouse_y * 100 / s;
+    abs(mx-20)<=8.5 && abs(my-37)<=8.5 ? drag_owner=2 :
+    abs(mx-50)<=8.5 && abs(my-37)<=8.5 ? drag_owner=3 :
+    abs(mx-80)<=8.5 && abs(my-37)<=8.5 ? drag_owner=4 :
+    abs(mx-10)<=6.5 && abs(my-75)<=6.5 ? drag_owner=1 :
+    abs(mx-28)<=6.5 && abs(my-75)<=6.5 ? drag_owner=5 :
+    abs(mx-46)<=6.5 && abs(my-75)<=6.5 ? drag_owner=6 :
+    abs(mx-64)<=6.5 && abs(my-75)<=6.5 ? drag_owner=7 :
+    abs(mx-82)<=6.5 && abs(my-75)<=6.5 ? drag_owner=8 :
+    drag_owner = 0;
+  );
+  !lmb ? drag_owner = 0;
+  prev_lmb = lmb;
+
+  sv1=repeats; sv2=delay_div; sv3=length_div; sv4=beat_align_div;
+  sv5=delay_decay; sv6=length_decay; sv7=pitch_offset; sv8=vel_offset;
+
+  // ---- Background ----
+  PR.Color.Panel = "161D30FF";
+  PR.DisplayPanel(50, 50, 98, 98);
+
+  // ---- Title ----
+  PR.DisplayText(50, 8, 5.5, "MIDI Echo", 'b');
+
+  // ---- TIMING sub-panel (y=18–52) ----
+  PR.Color.Panel = "0D1525C0";
+  PR.DisplayPanel(50, 35, 96, 34);
+  PR.Color.Panel = "161D30FF";
+
+  PR.Color.Text = "6080B0FF";
+  PR.DisplayText(8, 20, 2.8, "TIMING");
+  PR.Color.Text = "FFFFFFFF";
+
+  // Delay rotary — label y=24, switch y=37, value y=51
+  PR.DisplayText(20, 24, 3.5, "Delay");
+  PR.SetShape(20, 37, 17);
+  PR.DisplayRotarySwitch(2, 23, 1);
+  gdi = floor(delay_div);
+  gdi < 10 ? PR.DisplayText(20, 51, 3.5, divN1[gdi]) :
+  gdi < 19 ? PR.DisplayText(20, 51, 3.5, divN2[gdi-10]) :
+             PR.DisplayText(20, 51, 3.5, divN3[gdi-19]);
+
+  // Length rotary
+  PR.DisplayText(50, 24, 3.5, "Length");
+  PR.SetShape(50, 37, 17);
+  PR.DisplayRotarySwitch(3, 23, 1);
+  gli = floor(length_div);
+  gli < 10 ? PR.DisplayText(50, 51, 3.5, divN1[gli]) :
+  gli < 19 ? PR.DisplayText(50, 51, 3.5, divN2[gli-10]) :
+             PR.DisplayText(50, 51, 3.5, divN3[gli-19]);
+
+  // Beat Align rotary
+  PR.DisplayText(80, 24, 3.5, "Beat Align");
+  PR.SetShape(80, 37, 17);
+  PR.DisplayRotarySwitch(4, 24, 1);
+  gai = floor(beat_align_div);
+  gai < 10 ? PR.DisplayText(80, 51, 3.5, aliN1[gai]) :
+  gai < 19 ? PR.DisplayText(80, 51, 3.5, aliN2[gai-10]) :
+             PR.DisplayText(80, 51, 3.5, aliN3[gai-19]);
+
+  // ---- CONTROL sub-panel (y=57–93) ----
+  PR.Color.Panel = "0D1525C0";
+  PR.DisplayPanel(50, 75, 96, 36);
+  PR.Color.Panel = "161D30FF";
+
+  PR.Color.Text = "6080B0FF";
+  PR.DisplayText(8, 59, 2.8, "CONTROL");
+  PR.Color.Text = "FFFFFFFF";
+
+  // Knob labels — y=65, giving clear gap below "CONTROL"
+  PR.DisplayText(10, 65, 3.5, "Repeats");
+  PR.DisplayText(28, 65, 3.5, "Dly Decay");
+  PR.DisplayText(46, 65, 3.5, "Len Decay");
+  PR.DisplayText(64, 65, 3.5, "Pitch");
+  PR.DisplayText(82, 65, 3.5, "Velocity");
+
+  // Knobs — suppress PR's built-in float text by setting text colour transparent,
+  // then restore and draw our own integer labels.
+  PR.Color.Text = "00000000";
+  PR.SetShape(10, 75, 13); PR.DisplayKnob(sRepeats,  1);
+  PR.SetShape(28, 75, 13); PR.DisplayKnob(sDelDecay, 1);
+  PR.SetShape(46, 75, 13); PR.DisplayKnob(sLenDecay, 1);
+  PR.SetShape(64, 75, 13); PR.DisplayKnob(sPitchOff, 1);
+  PR.SetShape(82, 75, 13); PR.DisplayKnob(sVelOff,   1);
+  PR.Color.Text = "FFFFFFFF";
+
+  // Range extremity labels — integer only, placed at knob arc endpoints
+  // Position: x = cx ± size*0.42,  y = cy + size*0.57  →  y ≈ 82
+  PR.Color.Text = "50507080";
+  PR.DisplayText( 4.5, 82.4, 2.5, "0");    PR.DisplayText(15.5, 82.4, 2.5, "16");
+  PR.DisplayText(22.5, 82.4, 2.5, "1");    PR.DisplayText(33.5, 82.4, 2.5, "200");
+  PR.DisplayText(40.5, 82.4, 2.5, "1");    PR.DisplayText(51.5, 82.4, 2.5, "200");
+  PR.DisplayText(58.5, 82.4, 2.5, "-24");  PR.DisplayText(69.5, 82.4, 2.5, "+24");
+  PR.DisplayText(76.5, 82.4, 2.5, "-36");  PR.DisplayText(87.5, 82.4, 2.5, "+36");
+  PR.Color.Text = "FFFFFFFF";
+
+  // Current value display — integers only, y=88
+  rp = floor(pitch_offset  + 0.5);  rv = floor(vel_offset   + 0.5);
+  sprintf(#r,  "%d",    floor(repeats      + 0.5));
+  sprintf(#dd, "%d%%",  floor(delay_decay  + 0.5));
+  sprintf(#ld, "%d%%",  floor(length_decay + 0.5));
+  rp > 0 ? sprintf(#p, "+%d st", rp) : sprintf(#p, "%d st", rp);
+  rv > 0 ? sprintf(#v, "+%d",    rv) : sprintf(#v, "%d",    rv);
+  PR.DisplayText(10, 88, 3.5, #r);
+  PR.DisplayText(28, 88, 3.5, #dd);
+  PR.DisplayText(46, 88, 3.5, #ld);
+  PR.DisplayText(64, 88, 3.5, #p);
+  PR.DisplayText(82, 88, 3.5, #v);
+
+  // ---- Restore non-owner sliders ----
+  lmb && drag_owner > 0 ? (
+    drag_owner != 1 ? repeats        = sv1;
+    drag_owner != 2 ? delay_div      = sv2;
+    drag_owner != 3 ? length_div     = sv3;
+    drag_owner != 4 ? beat_align_div = sv4;
+    drag_owner != 5 ? delay_decay    = sv5;
+    drag_owner != 6 ? length_decay   = sv6;
+    drag_owner != 7 ? pitch_offset   = sv7;
+    drag_owner != 8 ? vel_offset     = sv8;
+  );
+
+  // ---- Hint bar ----
+  PR.Color.Text = "50507080";
+  PR.DisplayText(50, 96, 2.5, "Drag to change  |  Right-click = reset  |  Ctrl+drag = fine");
+  PR.Color.Text = "FFFFFFFF";
+
+  // ---- Debug ----
+  PR.Debug != "" ? PR.DisplayText(50, 50, 5, PR.Debug);
