@@ -1,4 +1,5 @@
 desc: Widget tests for PRLibrary
+// @noindex
 
 import PhilRangerAudioLibraryAlpha5.jsfx-inc
 

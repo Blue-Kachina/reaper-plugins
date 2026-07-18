@@ -1,15 +1,15 @@
 desc:Ultra8 Looper
-
-// @description
-// Eight-lane looper for REAPER.
-//
 // @author Blue Kachina
 // @version 1.0.0
 // @changelog
 //   Initial ReaPack release.
-//
 // @about
 //   Ultra8 is a multi-lane looper designed for use in REAPER.
+provides:
+  philranger_GUI and Audio Library/PhilRangerAudioLibraryAlpha5.jsfx-inc
+  philranger_GUI and Audio Library/Knob.png
+  philranger_GUI and Audio Library/Highlight.png
+  philranger_GUI and Audio Library/Switch.png
 
 // Copyright (C) 2015 and onward Cockos Inc
 // LICENSE: LGPL v2 or later - http://www.gnu.org/licenses/lgpl.html
@@ -74,12 +74,6 @@ desc:Ultra8 Looper
 // - start gate: when recording the initial loop, use this gate value before starting recording 
 //   (useful for hand-shortages)
 // - latch: wait to run commands until next loop iteration
-
-provides:
-  philranger_GUI and Audio Library/PhilRangerAudioLibraryAlpha5.jsfx-inc
-  philranger_GUI and Audio Library/Knob.png
-  philranger_GUI and Audio Library/Highlight.png
-  philranger_GUI and Audio Library/Switch.png
 
 import PhilRangerAudioLibraryAlpha5.jsfx-inc
 

@@ -2,10 +2,10 @@ desc:Tester for PRLibrary Alpha 5
 author: Phil Ranger
 version: 0.Alpha5
 provides:
-  philranger_GUI and Audio Library/PhilRangerAudioLibraryAlpha5.jsfx-inc
-  philranger_GUI and Audio Library/Knob.png
-  philranger_GUI and Audio Library/Highlight.png
-  philranger_GUI and Audio Library/Switch.png
+  PhilRangerAudioLibraryAlpha5.jsfx-inc
+  Knob.png
+  Highlight.png
+  Switch.png
   Widget test set for PRLibrary.jsfx
 about:
   This is about the library, not the plugin itself as it is given only as an example of using most of the library functions.

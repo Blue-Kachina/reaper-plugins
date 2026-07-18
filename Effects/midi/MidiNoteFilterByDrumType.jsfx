@@ -1,13 +1,8 @@
 desc:MIDI Note Filter By Drum Type
-
-// @description
-// Just a little something to allow you to only specific types of MIDI notes through.
-//
 // @author Blue Kachina
 // @version 1.0.0
 // @changelog
 //   Initial ReaPack release.
-//
 // @about
 //   Filters MIDI notes to commonly-used drum type groupings.
 
