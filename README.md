@@ -1,23 +1,21 @@
-# ReaPack Repository Template
+# Blue Kachina REAPER Plugins
 
-A template for GitHub-hosted ReaPack repositories with automated
-[reapack-index](https://github.com/cfillion/reapack-index)
-running from GitHub Actions.
+JSFX effects and utilities for Cockos REAPER.
 
-Replace the name of the repository in [index.xml](/index.xml) when using this template.
-This will be the name shown in ReaPack.
+## Installation
 
-```xml
-<index version="1" name="Name of your repository here">
-```
+1. Install ReaPack.
+2. In REAPER, open:
+   Extensions > ReaPack > Import repositories
+3. Add:
 
-Replace the contents of this file ([README.md](/README.md)).
-This will be the text shown when using ReaPack's "About this repository" feature.
+   https://raw.githubusercontent.com/Blue-Kachina/reaper-plugins/main/index.xml
 
-reapack-index looks for package files in subfolders.
-The folder tree represents the package categories shown in ReaPack.
+4. Synchronize ReaPack.
+5. Browse and install the desired packages.
 
-Each package file is expected to begin with a metadata header.
-See [Packaging Documentation](https://github.com/cfillion/reapack-index/wiki/Packaging-Documentation) on reapack-index's wiki.
+## Packages
 
-The URL to import in ReaPack is [https://github.com/`<your username>`/`<repository name>`/raw/master/index.xml](https://github.com/cfillion/reapack-repository-template/raw/master/index.xml).
+- Ultra8 — Multi-lane looper — A big expansion on the Super8 Looper that came with REAPER
+- MIDI Note Filter By Drum Type — Example: Can put it on a track to only let snare hits through
+- MIDI Echo - Like an audio-echo/delay, but in MIDI form. Allows subsequent echoes to change pitch/velocity

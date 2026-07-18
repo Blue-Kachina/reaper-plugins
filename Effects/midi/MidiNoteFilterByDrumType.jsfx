@@ -1,0 +1,149 @@
+desc:MIDI Note Filter By Drum Type
+
+// @description
+// Just a little something to allow you to only specific types of MIDI notes through.
+//
+// @author Blue Kachina
+// @version 1.0.0
+// @changelog
+//   Initial ReaPack release.
+//
+// @about
+//   Filters MIDI notes to commonly-used drum type groupings.
+
+slider1:0<0,4,1{Kick,Snare,Hats,Toms,Cymbals}>Group
+
+@init
+NOTE_OFF        = 8;
+NOTE_ON         = 9;
+POLY_AFTERTOUCH = 10;
+CC              = 11;
+
+// Category IDs
+GROUP_KICK    = 0;
+GROUP_SNARE   = 1;
+GROUP_HATS    = 2;
+GROUP_TOMS    = 3;
+GROUP_CYMBALS = 4;
+
+// CC numbers seen from the drumkit
+CC_HAT_PEDAL  = 4;   // Hi-hat pedal openness
+CC_SNARE      = 16;  // Snare-related performance data
+CC_TOMS       = 18;  // Tom-related performance data
+
+
+function is_kick_note(note) (
+  note == 36;
+);
+
+
+function is_snare_note(note) (
+  // Original map had 38 and 40.
+  // Your capture shows 38.
+  note == 38 || note == 40;
+);
+
+
+function is_hat_note(note) (
+  // Original map had 42, 44, 46.
+  // Your capture shows 44, 46, plus aftertouch on 26.
+  note == 42 ||
+  note == 44 ||
+  note == 46 ||
+  note == 26;
+);
+
+
+function is_tom_note(note) (
+  // Original map had 47, 48, 50, 27.
+  // Your capture also shows 43, 45, 28.
+  note == 27 ||
+  note == 28 ||
+  note == 43 ||
+  note == 45 ||
+  note == 47 ||
+  note == 48 ||
+  note == 50;
+);
+
+
+function is_cymbal_note(note) (
+  // Original map had 57, 59, 61, 63, 64, 65, 67.
+  // Your capture also shows 49 and aftertouch on 55.
+  note == 49 ||
+  note == 55 ||
+  note == 57 ||
+  note == 59 ||
+  note == 61 ||
+  note == 63 ||
+  note == 64 ||
+  note == 65 ||
+  note == 67;
+);
+
+
+function is_note_in_group(note, group) (
+  group == GROUP_KICK    ? is_kick_note(note)    :
+  group == GROUP_SNARE   ? is_snare_note(note)   :
+  group == GROUP_HATS    ? is_hat_note(note)     :
+  group == GROUP_TOMS    ? is_tom_note(note)     :
+  group == GROUP_CYMBALS ? is_cymbal_note(note)  :
+  0;
+);
+
+
+function is_cc_in_group(cc_num, group) (
+  // These CCs do not have a note number, so we assign them to the
+  // drum category they appear to belong to.
+  group == GROUP_HATS  && cc_num == CC_HAT_PEDAL ? 1 :
+  group == GROUP_SNARE && cc_num == CC_SNARE     ? 1 :
+  group == GROUP_TOMS  && cc_num == CC_TOMS      ? 1 :
+  0;
+);
+
+
+@block
+while (
+  midirecv(offset, msg1, msg23) ? (
+    status = (msg1 / 16) | 0;
+
+    data1 = msg23 & 127;
+    data2 = (msg23 / 256) & 127;
+
+    group = slider1;
+
+    pass = 0;
+
+    // Notes:
+    // data1 = note number
+    // data2 = velocity / off velocity
+    (status == NOTE_ON || status == NOTE_OFF) ? (
+      pass = is_note_in_group(data1, group);
+    )
+
+    // Poly aftertouch:
+    // data1 = note number
+    // data2 = pressure value
+    : status == POLY_AFTERTOUCH ? (
+      pass = is_note_in_group(data1, group);
+    )
+
+    // CC:
+    // data1 = CC number
+    // data2 = CC value
+    : status == CC ? (
+      pass = is_cc_in_group(data1, group);
+    )
+
+    // System/realtime messages:
+    // Let these through so we don't accidentally interfere with timing,
+    // transport, clock, etc.
+    : status == 15 ? (
+      pass = 1;
+    );
+
+    pass ? midisend(offset, msg1, msg23);
+
+    1;
+  );
+);
