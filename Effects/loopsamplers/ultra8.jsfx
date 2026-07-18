@@ -84,6 +84,8 @@ filename:0,philranger_GUI and Audio Library/Highlight.png
 filename:1,philranger_GUI and Audio Library/Knob.png
 filename:2,philranger_GUI and Audio Library/Switch.png
 
+tags: looper loop sampler multitrack
+
 <? nch < 1 ? nch = 8 ?>
 <? maxmem < 8 ? maxmem = 256 ?>
 <?

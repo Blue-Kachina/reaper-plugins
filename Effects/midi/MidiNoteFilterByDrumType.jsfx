@@ -6,6 +6,7 @@ desc:MIDI Note Filter By Drum Type
 // @about
 //   Filters MIDI notes to commonly-used drum type groupings.
 
+tags: MIDI filter drums
 slider1:0<0,4,1{Kick,Snare,Hats,Toms,Cymbals}>Group
 
 @init
