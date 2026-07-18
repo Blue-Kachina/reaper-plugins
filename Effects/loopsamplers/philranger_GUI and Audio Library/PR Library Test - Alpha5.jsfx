@@ -1,4 +1,5 @@
 desc:Tester for PRLibrary Alpha 5
+noindex: true
 author: Phil Ranger
 version: 0.Alpha5
 provides:
