@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="Blue-Kachina's REAPER Plugins" commit="a6bb49be851b704c0d7baf1ddc03e8dda25ed370">
+<index version="1" name="Blue-Kachina's REAPER Plugins" commit="c9c8b7669673a7bc3a6a382e68e5034cb80beb0d">
   <category name="Effects/loopsamplers">
     <reapack name="ultra8.jsfx" type="effect" desc="Ultra8 Looper">
       <metadata>
@@ -21,6 +21,18 @@
         <source file="philranger_GUI and Audio Library/Knob.png">https://github.com/Blue-Kachina/reaper-plugins/raw/a6bb49be851b704c0d7baf1ddc03e8dda25ed370/Effects/loopsamplers/philranger_GUI%20and%20Audio%20Library/Knob.png</source>
         <source file="philranger_GUI and Audio Library/Highlight.png">https://github.com/Blue-Kachina/reaper-plugins/raw/a6bb49be851b704c0d7baf1ddc03e8dda25ed370/Effects/loopsamplers/philranger_GUI%20and%20Audio%20Library/Highlight.png</source>
         <source file="philranger_GUI and Audio Library/Switch.png">https://github.com/Blue-Kachina/reaper-plugins/raw/a6bb49be851b704c0d7baf1ddc03e8dda25ed370/Effects/loopsamplers/philranger_GUI%20and%20Audio%20Library/Switch.png</source>
+      </version>
+      <version name="1.0.2" author="Blue Kachina" time="2026-07-18T21:01:00Z">
+        <changelog><![CDATA[1.0.2: Add tags (looper, loop, sampler, multitrack) for ReaPack categorization.
+1.0.1: Fix ReaPack indexing (package was silently excluded after a
+       provides/file-ownership conflict with a bundled library's demo
+       file; force reindex now that the conflict is resolved).
+1.0.0: Initial ReaPack release.]]></changelog>
+        <source>https://github.com/Blue-Kachina/reaper-plugins/raw/c9c8b7669673a7bc3a6a382e68e5034cb80beb0d/Effects/loopsamplers/ultra8.jsfx</source>
+        <source file="philranger_GUI and Audio Library/PhilRangerAudioLibraryAlpha5.jsfx-inc">https://github.com/Blue-Kachina/reaper-plugins/raw/c9c8b7669673a7bc3a6a382e68e5034cb80beb0d/Effects/loopsamplers/philranger_GUI%20and%20Audio%20Library/PhilRangerAudioLibraryAlpha5.jsfx-inc</source>
+        <source file="philranger_GUI and Audio Library/Knob.png">https://github.com/Blue-Kachina/reaper-plugins/raw/c9c8b7669673a7bc3a6a382e68e5034cb80beb0d/Effects/loopsamplers/philranger_GUI%20and%20Audio%20Library/Knob.png</source>
+        <source file="philranger_GUI and Audio Library/Highlight.png">https://github.com/Blue-Kachina/reaper-plugins/raw/c9c8b7669673a7bc3a6a382e68e5034cb80beb0d/Effects/loopsamplers/philranger_GUI%20and%20Audio%20Library/Highlight.png</source>
+        <source file="philranger_GUI and Audio Library/Switch.png">https://github.com/Blue-Kachina/reaper-plugins/raw/c9c8b7669673a7bc3a6a382e68e5034cb80beb0d/Effects/loopsamplers/philranger_GUI%20and%20Audio%20Library/Switch.png</source>
       </version>
     </reapack>
   </category>
