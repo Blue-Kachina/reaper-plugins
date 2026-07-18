@@ -1,8 +1,11 @@
 desc:Ultra8 Looper
 // @author Blue Kachina
-// @version 1.0.0
+// @version 1.0.1
 // @changelog
-//   Initial ReaPack release.
+//   1.0.1: Fix ReaPack indexing (package was silently excluded after a
+//          provides/file-ownership conflict with a bundled library's demo
+//          file; force reindex now that the conflict is resolved).
+//   1.0.0: Initial ReaPack release.
 // @about
 //   Ultra8 is a multi-lane looper designed for use in REAPER.
 provides:
