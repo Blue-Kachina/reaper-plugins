@@ -1,5 +1,74 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="Blue-Kachina's REAPER Plugins" commit="8b337e560e209afd8dbcdf68643389523125716b">
+<index version="1" name="Blue-Kachina's REAPER Plugins" commit="2596b8e33012e60410ac71dea196c4acccc8371d">
+  <category name="Effects/loopsamplers/philranger_GUI and Audio Library">
+    <reapack name="PR Library Test - Alpha5.jsfx" type="effect" desc="Tester for PRLibrary Alpha 5">
+      <metadata>
+        <description><![CDATA[{\rtf1\ansi\deff0{\fonttbl{\f0 \fswiss Helvetica;}{\f1 \fmodern Courier;}}
+{\colortbl;\red255\green0\blue0;\red0\green0\blue255;}
+\widowctrl\hyphauto
+
+{\pard \ql \f0 \sa180 \li0 \fi0 This is about the library, not the plugin itself as it is given only as an example of using most of the library functions. Comments welcome!\par}
+{\pard \ql \f0 \sa180 \li0 \fi0 My goals were:\par}
+{\pard \ql \f0 \sa0 \li360 \fi-360 \bullet \tx360\tab Automatic resizing of the graphic components\par}
+{\pard \ql \f0 \sa0 \li360 \fi-360 \bullet \tx360\tab Automatic memory management\par}
+{\pard \ql \f0 \sa0 \li360 \fi-360 \bullet \tx360\tab Written in JSFX exclusively so it's easy to understand, edit and improve Main graphic functions included:\par}
+{\pard \ql \f0 \sa0 \li360 \fi-360 \bullet \tx360\tab Linear and non-linear range management\par}
+{\pard \ql \f0 \sa0 \li360 \fi-360 \bullet \tx360\tab GUI for texts and numbers, panels, pictures, knobs, sliders, switches and meters.\par}
+{\pard \ql \f0 \sa0 \li360 \fi-360 \bullet \tx360\tab Sliders, switches and knobs have a default style or can be whatever picture you want. Audio functions included:\par}
+{\pard \ql \f0 \sa0 \li360 \fi-360 \bullet \tx360\tab Mono and Stereo EQ.\par}
+{\pard \ql \f0 \sa0 \li360 \fi-360 \bullet \tx360\tab Enveloppe follower.\par}
+{\pard \ql \f0 \sa0 \li360 \fi-360 \bullet \tx360\tab Clipper\par}
+{\pard \ql \f0 \sa0 \li360 \fi-360 \bullet \tx360\tab Mono and Stereo Delay (with clipping @+12 dB)\par}
+{\pard \ql \f0 \sa0 \li360 \fi-360 \bullet \tx360\tab Conversion utilities (linear vs DB, Frequency vs Omega, Range vs Percent)\sa180\par}
+}
+]]></description>
+      </metadata>
+      <version name="0.Alpha5" author="Phil Ranger" time="2026-07-18T20:13:00Z">
+        <source>https://github.com/Blue-Kachina/reaper-plugins/raw/2596b8e33012e60410ac71dea196c4acccc8371d/Effects/loopsamplers/philranger_GUI%20and%20Audio%20Library/PR%20Library%20Test%20-%20Alpha5.jsfx</source>
+        <source file="PhilRangerAudioLibraryAlpha5.jsfx-inc">https://github.com/Blue-Kachina/reaper-plugins/raw/2596b8e33012e60410ac71dea196c4acccc8371d/Effects/loopsamplers/philranger_GUI%20and%20Audio%20Library/PhilRangerAudioLibraryAlpha5.jsfx-inc</source>
+        <source file="Knob.png">https://github.com/Blue-Kachina/reaper-plugins/raw/2596b8e33012e60410ac71dea196c4acccc8371d/Effects/loopsamplers/philranger_GUI%20and%20Audio%20Library/Knob.png</source>
+        <source file="Highlight.png">https://github.com/Blue-Kachina/reaper-plugins/raw/2596b8e33012e60410ac71dea196c4acccc8371d/Effects/loopsamplers/philranger_GUI%20and%20Audio%20Library/Highlight.png</source>
+        <source file="Switch.png">https://github.com/Blue-Kachina/reaper-plugins/raw/2596b8e33012e60410ac71dea196c4acccc8371d/Effects/loopsamplers/philranger_GUI%20and%20Audio%20Library/Switch.png</source>
+        <source file="Widget test set for PRLibrary.jsfx">https://github.com/Blue-Kachina/reaper-plugins/raw/2596b8e33012e60410ac71dea196c4acccc8371d/Effects/loopsamplers/philranger_GUI%20and%20Audio%20Library/Widget%20test%20set%20for%20PRLibrary.jsfx</source>
+      </version>
+    </reapack>
+  </category>
+  <category name="Effects/midi">
+    <reapack name="midiEcho.jsfx" type="effect" desc="MIDI Echo">
+      <metadata>
+        <description><![CDATA[{\rtf1\ansi\deff0{\fonttbl{\f0 \fswiss Helvetica;}{\f1 \fmodern Courier;}}
+{\colortbl;\red255\green0\blue0;\red0\green0\blue255;}
+\widowctrl\hyphauto
+
+{\pard \ql \f0 \sa180 \li0 \fi0 Like an audio-echo/delay, but in MIDI form. Allows subsequent echoes to change pitch/velocity.\par}
+}
+]]></description>
+      </metadata>
+      <version name="1.0.0" author="Blue Kachina" time="2026-07-18T20:13:00Z">
+        <changelog><![CDATA[Initial ReaPack release.]]></changelog>
+        <source>https://github.com/Blue-Kachina/reaper-plugins/raw/2596b8e33012e60410ac71dea196c4acccc8371d/Effects/midi/midiEcho.jsfx</source>
+        <source file="philranger_GUI and Audio Library/PhilRangerAudioLibraryAlpha5.jsfx-inc">https://github.com/Blue-Kachina/reaper-plugins/raw/2596b8e33012e60410ac71dea196c4acccc8371d/Effects/midi/philranger_GUI%20and%20Audio%20Library/PhilRangerAudioLibraryAlpha5.jsfx-inc</source>
+        <source file="philranger_GUI and Audio Library/Highlight.png">https://github.com/Blue-Kachina/reaper-plugins/raw/2596b8e33012e60410ac71dea196c4acccc8371d/Effects/midi/philranger_GUI%20and%20Audio%20Library/Highlight.png</source>
+        <source file="philranger_GUI and Audio Library/Knob.png">https://github.com/Blue-Kachina/reaper-plugins/raw/2596b8e33012e60410ac71dea196c4acccc8371d/Effects/midi/philranger_GUI%20and%20Audio%20Library/Knob.png</source>
+        <source file="philranger_GUI and Audio Library/Switch.png">https://github.com/Blue-Kachina/reaper-plugins/raw/2596b8e33012e60410ac71dea196c4acccc8371d/Effects/midi/philranger_GUI%20and%20Audio%20Library/Switch.png</source>
+      </version>
+    </reapack>
+    <reapack name="MidiNoteFilterByDrumType.jsfx" type="effect" desc="MIDI Note Filter By Drum Type">
+      <metadata>
+        <description><![CDATA[{\rtf1\ansi\deff0{\fonttbl{\f0 \fswiss Helvetica;}{\f1 \fmodern Courier;}}
+{\colortbl;\red255\green0\blue0;\red0\green0\blue255;}
+\widowctrl\hyphauto
+
+{\pard \ql \f0 \sa180 \li0 \fi0 Filters MIDI notes to commonly-used drum type groupings.\par}
+}
+]]></description>
+      </metadata>
+      <version name="1.0.0" author="Blue Kachina" time="2026-07-18T20:13:00Z">
+        <changelog><![CDATA[Initial ReaPack release.]]></changelog>
+        <source>https://github.com/Blue-Kachina/reaper-plugins/raw/2596b8e33012e60410ac71dea196c4acccc8371d/Effects/midi/MidiNoteFilterByDrumType.jsfx</source>
+      </version>
+    </reapack>
+  </category>
   <metadata>
     <description><![CDATA[{\rtf1\ansi\deff0{\fonttbl{\f0 \fswiss Helvetica;}{\f1 \fmodern Courier;}}
 {\colortbl;\red255\green0\blue0;\red0\green0\blue255;}
