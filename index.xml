@@ -1,5 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="Blue-Kachina's REAPER Plugins" commit="9e0e2e20c5408a0f86965c9d54a0a7402257c463">
+<index version="1" name="Blue-Kachina's REAPER Plugins" commit="a6bb49be851b704c0d7baf1ddc03e8dda25ed370">
+  <category name="Effects/loopsamplers">
+    <reapack name="ultra8.jsfx" type="effect" desc="Ultra8 Looper">
+      <metadata>
+        <description><![CDATA[{\rtf1\ansi\deff0{\fonttbl{\f0 \fswiss Helvetica;}{\f1 \fmodern Courier;}}
+{\colortbl;\red255\green0\blue0;\red0\green0\blue255;}
+\widowctrl\hyphauto
+
+{\pard \ql \f0 \sa180 \li0 \fi0 Ultra8 is a multi-lane looper designed for use in REAPER.\par}
+}
+]]></description>
+      </metadata>
+      <version name="1.0.1" author="Blue Kachina" time="2026-07-18T20:44:00Z">
+        <changelog><![CDATA[1.0.1: Fix ReaPack indexing (package was silently excluded after a
+       provides/file-ownership conflict with a bundled library's demo
+       file; force reindex now that the conflict is resolved).
+1.0.0: Initial ReaPack release.]]></changelog>
+        <source>https://github.com/Blue-Kachina/reaper-plugins/raw/a6bb49be851b704c0d7baf1ddc03e8dda25ed370/Effects/loopsamplers/ultra8.jsfx</source>
+        <source file="philranger_GUI and Audio Library/PhilRangerAudioLibraryAlpha5.jsfx-inc">https://github.com/Blue-Kachina/reaper-plugins/raw/a6bb49be851b704c0d7baf1ddc03e8dda25ed370/Effects/loopsamplers/philranger_GUI%20and%20Audio%20Library/PhilRangerAudioLibraryAlpha5.jsfx-inc</source>
+        <source file="philranger_GUI and Audio Library/Knob.png">https://github.com/Blue-Kachina/reaper-plugins/raw/a6bb49be851b704c0d7baf1ddc03e8dda25ed370/Effects/loopsamplers/philranger_GUI%20and%20Audio%20Library/Knob.png</source>
+        <source file="philranger_GUI and Audio Library/Highlight.png">https://github.com/Blue-Kachina/reaper-plugins/raw/a6bb49be851b704c0d7baf1ddc03e8dda25ed370/Effects/loopsamplers/philranger_GUI%20and%20Audio%20Library/Highlight.png</source>
+        <source file="philranger_GUI and Audio Library/Switch.png">https://github.com/Blue-Kachina/reaper-plugins/raw/a6bb49be851b704c0d7baf1ddc03e8dda25ed370/Effects/loopsamplers/philranger_GUI%20and%20Audio%20Library/Switch.png</source>
+      </version>
+    </reapack>
+  </category>
   <category name="Effects/midi">
     <reapack name="midiEcho.jsfx" type="effect" desc="MIDI Echo">
       <metadata>
