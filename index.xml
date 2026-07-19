@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="Blue-Kachina's REAPER Plugins" commit="f6096102b37c3120463d757d837014e96a257d4a">
+<index version="1" name="Blue-Kachina's REAPER Plugins" commit="a387af233fc897db72bdd2ec7d641b4920056934">
   <category name="Effects/loopsamplers">
     <reapack name="ultra8.jsfx" type="effect" desc="Ultra8 Looper">
       <metadata>
@@ -86,6 +86,21 @@
       <version name="1.0.0" author="Blue Kachina" time="2026-07-19T20:03:40Z">
         <changelog><![CDATA[Initial ReaPack release.]]></changelog>
         <source>https://github.com/Blue-Kachina/reaper-plugins/raw/f6096102b37c3120463d757d837014e96a257d4a/Effects/Utilities/GrandPaulERhythm.jsfx</source>
+      </version>
+      <version name="1.0.2" author="Blue Kachina" time="2026-07-19T22:24:03Z">
+        <changelog><![CDATA[1.0.2: Fixed a false-attractor bug where a genuine 3-beat rhythm could get stuck
+       permanently misdetected as 2 -- every real 3-beat onset landed exactly on one
+       of the tolerated "triplet variation" ratios relative to the wrong 2-grid, so
+       it never accumulated enough evidence to self-correct. Auto-detection can no
+       longer land on 2 sides at all (a 2-gon is a degenerate line, not a shape), which
+       closes the trap at its root; minimum detected/settable side count is now 3.
+1.0.1: Fixed shapes snapping back to full opacity in a scrambled rainbow of every
+       auto-added hue when the playhead moved backward (loop restart or manual
+       rewind/seek) -- a stale "last hit" timestamp from later in the timeline was
+       being misread as a hit in the near future, un-fading every enabled rhythm at
+       once regardless of whether it was actually still sounding.
+1.0.0: Initial ReaPack release.]]></changelog>
+        <source>https://github.com/Blue-Kachina/reaper-plugins/raw/a387af233fc897db72bdd2ec7d641b4920056934/Effects/Utilities/GrandPaulERhythm.jsfx</source>
       </version>
     </reapack>
   </category>
