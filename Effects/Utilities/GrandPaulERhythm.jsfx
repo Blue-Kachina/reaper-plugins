@@ -1,8 +1,19 @@
 desc:GrandPaul eRhythm
 // @author Blue Kachina
-// @version 1.0.0
+// @version 1.0.2
 // @changelog
-//   Initial ReaPack release.
+//   1.0.2: Fixed a false-attractor bug where a genuine 3-beat rhythm could get stuck
+//          permanently misdetected as 2 -- every real 3-beat onset landed exactly on one
+//          of the tolerated "triplet variation" ratios relative to the wrong 2-grid, so
+//          it never accumulated enough evidence to self-correct. Auto-detection can no
+//          longer land on 2 sides at all (a 2-gon is a degenerate line, not a shape), which
+//          closes the trap at its root; minimum detected/settable side count is now 3.
+//   1.0.1: Fixed shapes snapping back to full opacity in a scrambled rainbow of every
+//          auto-added hue when the playhead moved backward (loop restart or manual
+//          rewind/seek) -- a stale "last hit" timestamp from later in the timeline was
+//          being misread as a hit in the near future, un-fading every enabled rhythm at
+//          once regardless of whether it was actually still sounding.
+//   1.0.0: Initial ReaPack release.
 // @about
 //   GrandPaul eRhythm is a polyrhythm visualizer for REAPER. Each input channel (audio
 //   and/or MIDI) becomes its own concentric rhythm shape, with a ball riding the
@@ -96,7 +107,7 @@ out_pin:out 8
   // bare-global temp), so it's safe to call from both the audio thread and the UI thread
   // without a cross-thread variable collision.
   function effSides(rIdx) (
-    max(2, min(MAXSIDES, r_sides[rIdx]|0));
+    max(MINSIDES, min(MAXSIDES, r_sides[rIdx]|0));
   );
 
   // Nearest "simple fraction" match for an onset's ratio to the current grid's expected
@@ -130,7 +141,7 @@ out_pin:out 8
   // both call it without duplicating this logic.
   function reestimate(rIdx, ioi) local(cand) (
     cand = floor(L / ioi + 0.5);
-    cand = max(2, min(MAXSIDES, cand));
+    cand = max(MINSIDES, min(MAXSIDES, cand));
     cand === candN[rIdx] ? streakBeats[rIdx] += ioi : ( candN[rIdx] = cand; streakBeats[rIdx] = ioi; );
     // Only overwritten while this rhythm isn't locked -- detection still runs
     // continuously on every channel (so autoconfigure can see activity on disabled
@@ -169,6 +180,7 @@ out_pin:out 8
     // against to eventually remove a channel that's gone quiet.
     r_lastHitBeat[rIdx] >= 0 && (beat_position - r_lastHitBeat[rIdx]) < autocfgWindowBeats ? r_hitStreak[rIdx] += 1 : r_hitStreak[rIdx] = 1;
     r_lastHitBeat[rIdx] = beat_position;
+    r_forceFaded[rIdx]  = 0;
 
     onsetLastBeat[rIdx] >= 0 ? (
       ioi = beat_position - onsetLastBeat[rIdx];
@@ -373,7 +385,9 @@ out_pin:out 8
     Nr  = effSides(ri);
     rad = Rmax * (1 - ri*gap);
 
-    !r_lock[ri] && r_lastHitBeat[ri] >= 0 ? (
+    !r_lock[ri] && r_forceFaded[ri] ? (
+      fadeMul = 0;
+    ) : !r_lock[ri] && r_lastHitBeat[ri] >= 0 ? (
       fadeMul = max(0, 1 - (beat_position - r_lastHitBeat[ri]) / fadeSpanBeats);
     ) : (
       fadeMul = 1;
@@ -444,10 +458,18 @@ out_pin:out 8
     r_traily[ri] = bally;
   );
 
-  // MAXSIDES must match the Sides dial's upper bound (12). NUMR matches the 8 in/out
-  // pins above. Both audio channel r and MIDI channel r feed rhythm r by the same fixed
+  // MAXSIDES must match the Sides dial's upper bound (12). MINSIDES is 3, not 2: a 2-gon
+  // is a degenerate line segment, not a shape, and allowing auto-detection to land on it
+  // used to create a false attractor -- a true 3-beat rhythm that got misdetected as 2 early
+  // on (a slightly long onset interval rounds down at the floor) would then have every
+  // genuine 3-beat onset misread as a "triplet variation of a 2-grid" (ratio exactly 2/3,
+  // one of nearestSimpleRatio()'s tolerated fractions -- see smart_subdivisions.md) instead
+  // of evidence the grid should be 3, so it could get stuck there indefinitely. With 2 no
+  // longer a reachable candidate, that trap can't form. NUMR matches the 8 in/out pins
+  // above. Both audio channel r and MIDI channel r feed rhythm r by the same fixed
   // convention -- no mapping control needed for either.
   MAXSIDES = 12;
+  MINSIDES = 3;
   NUMR = 8;
 
   // Numbered string slots NAME_BASE..NAME_BASE+NUMR-1 hold each rhythm's display name,
@@ -487,6 +509,7 @@ out_pin:out 8
   r_midiSeen  = freemem; freemem += NUMR;
   r_lastHitBeat = freemem; freemem += NUMR;
   r_hitStreak   = freemem; freemem += NUMR;
+  r_forceFaded  = freemem; freemem += NUMR;
 
   // Onset detector: fast envelope must exceed (slow envelope * ratio + floor) to fire.
   // The floor is ADAPTIVE -- a fraction of each channel's own recent peak level
@@ -563,6 +586,7 @@ out_pin:out 8
   prevPhase01 = -1;
   cyclePulse  = 0;
   lastSrate   = 0;
+  lastBeatPos = -1;
 
   // UI state (all @gfx-only).
   uiMode        = 0;   // 0 = main visualization, 1 = edit configuration panel
@@ -607,11 +631,41 @@ out_pin:out 8
     r_midiSeen[ri]     = 0;
     r_lastHitBeat[ri]  = -1;
     r_hitStreak[ri]    = 0;
+    r_forceFaded[ri]   = 0;
     sprintf(NAME_BASE + ri, "In %d", ri + 1);
     ri += 1;
   );
 
 @block
+  // Transport discontinuity guard: beat_position normally only increases during playback,
+  // but a loop restart or a manual playhead drag/seek can make it jump BACKWARD. Left
+  // unhandled, every r_lastHitBeat/onsetLastBeat timestamp recorded "later" than the new
+  // position reads as a hit in the near future: drawRhythmShape()'s fadeMul numerator goes
+  // negative (pushing fadeMul past 1), instantly un-fading every enabled shape at once --
+  // spanning every auto-added hue (up to NUMR distinct ones), not just whichever one or two
+  // are actually still sounding -- and triggerOnset()'s hit-streak/IOI math misreads the
+  // stale future timestamp as still-current, corrupting streak/subdivision tracking too.
+  //
+  // r_forceFaded (checked ahead of r_lastHitBeat in drawRhythmShape) is the fix rather than
+  // just resetting r_lastHitBeat to -1: that sentinel already means "never heard, don't
+  // fade" for decorative always-on shapes, so reusing it here would make every previously-
+  // heard-then-gone-quiet shape snap to full opacity too -- the same visible bug from a
+  // different cause. r_forceFaded instead forces fully transparent immediately, exactly as
+  // if the rewound position found the rhythm still silent, and clears itself the instant a
+  // genuine onset arrives (see triggerOnset()), which also restores normal fade timing from
+  // that fresh hit.
+  lastBeatPos >= 0 && beat_position < lastBeatPos ? (
+    bri = 0;
+    loop(NUMR,
+      r_lastHitBeat[bri] = -1;
+      onsetLastBeat[bri] = -1;
+      r_hitStreak[bri]   = 0;
+      r_forceFaded[bri]  = 1;
+      bri += 1;
+    );
+  );
+  lastBeatPos = beat_position;
+
   // Envelope-follower coefficients (fast ~3ms, slow ~150ms), compensated for the
   // THROTTLE_K-sample gap between actual updates so the real-time constants stay correct.
   // Recomputed here (rather than a one-shot @slider computation) so a genuine sample-rate
@@ -974,13 +1028,13 @@ out_pin:out 8
     // whether Sides actually matches the real transients. Frame-based decay (not the
     // per-block exp(-samplesblock/...) used elsewhere) since @gfx has no sample-accurate
     // timing of its own -- this is a cosmetic aid, not audio-critical.
-    sidesN = max(2, min(MAXSIDES, r_sides[sel]|0));
+    sidesN = max(MINSIDES, min(MAXSIDES, r_sides[sel]|0));
     sidesEdgeNow = floor(phase01 * sidesN)|0;
     sidesEdgeNow >= sidesN ? sidesEdgeNow = sidesN - 1;
     sidesEdgeNow !== sidesPulseEdge ? ( sidesPulseLife = 1; sidesPulseEdge = sidesEdgeNow; );
     sidesPulseLife *= 0.85;
 
-    sidesFrac = (r_sides[sel] - 3) / 9;
+    sidesFrac = (r_sides[sel] - MINSIDES) / (MAXSIDES - MINSIDES);
     drawDial(dial1X, dialY, dialR, sidesFrac, "SIDES", 10);
     sidesPulseLife > 0.02 ? (
       gfx_r = THEME_R; gfx_g = THEME_G; gfx_b = THEME_B;
@@ -1001,7 +1055,7 @@ out_pin:out 8
 
     dragTarget === 1 ? (
       mouseDown ? (
-        r_sides[sel] = max(3, min(12, dragStartVal + (dragStartY - mouse_y)/6))|0;
+        r_sides[sel] = max(MINSIDES, min(MAXSIDES, dragStartVal + (dragStartY - mouse_y)/6))|0;
       ) : dragTarget = 0;
     );
     dragTarget === 2 ? (
