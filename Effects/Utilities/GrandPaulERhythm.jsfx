@@ -1,0 +1,1083 @@
+desc:GrandPaul eRhythm
+// @author Blue Kachina
+// @version 1.0.0
+// @changelog
+//   Initial ReaPack release.
+// @about
+//   GrandPaul eRhythm is a polyrhythm visualizer for REAPER. Each input channel (audio
+//   and/or MIDI) becomes its own concentric rhythm shape, with a ball riding the
+//   polygon's edges and landing on a corner every beat -- the number of corners is
+//   auto-detected from the incoming signal against the project's tempo and time
+//   signature, and channels configure themselves automatically as they start and stop.
+
+tags: visualizer polyrhythm rhythm beat-detection midi audio
+
+options:no_meter
+
+in_pin:in 1
+in_pin:in 2
+in_pin:in 3
+in_pin:in 4
+in_pin:in 5
+in_pin:in 6
+in_pin:in 7
+in_pin:in 8
+out_pin:out 1
+out_pin:out 2
+out_pin:out 3
+out_pin:out 4
+out_pin:out 5
+out_pin:out 6
+out_pin:out 7
+out_pin:out 8
+
+@init
+  // Without this, @init re-runs (re-zeroing all our arrays back to defaults) every time
+  // transport starts or the sample rate changes -- not just on load. @serialize below
+  // covers persistence across project save/reload; this covers persistence across
+  // play/stop within a session. Since nothing here caches srate-dependent values in
+  // @init itself (fastA/slowA are recomputed in @block whenever srate actually changes,
+  // see below), disabling the automatic re-init is safe.
+  ext_noinit = 1;
+
+  // HSV -> gfx_r/g/b. Reads/writes gfx_* so call only from @gfx.
+  function hsv2rgb(h, s, v) local(i, f, p, q, t) (
+    h -= floor(h);
+    i = floor(h*6)|0;
+    f = h*6 - i;
+    p = v*(1 - s);
+    q = v*(1 - s*f);
+    t = v*(1 - s*(1 - f));
+    i === 0 ? ( gfx_r = v; gfx_g = t; gfx_b = p; ) :
+    i === 1 ? ( gfx_r = q; gfx_g = v; gfx_b = p; ) :
+    i === 2 ? ( gfx_r = p; gfx_g = v; gfx_b = t; ) :
+    i === 3 ? ( gfx_r = p; gfx_g = q; gfx_b = v; ) :
+    i === 4 ? ( gfx_r = t; gfx_g = p; gfx_b = v; ) :
+              ( gfx_r = v; gfx_g = p; gfx_b = q; );
+  );
+
+  // Filled quad approximating a line of half-width hw from (x1,y1) to (x2,y2) -- gfx_line
+  // has no thickness parameter, so thick edges are drawn as a rotated rectangle instead.
+  // Uses the current gfx_r/g/b/a, so set color before calling. @gfx-only (uses gfx_*).
+  function thickLine(x1, y1, x2, y2, hw) local(dx, dy, len, px, py) (
+    dx = x2 - x1; dy = y2 - y1;
+    len = sqrt(dx*dx + dy*dy);
+    len > 0 ? (
+      px = -dy/len * hw; py = dx/len * hw;
+      gfx_triangle(x1+px, y1+py, x2+px, y2+py, x2-px, y2-py, x1-px, y1-py);
+    );
+  );
+
+  // Thick arc from ang1 to ang2 (radians) around (cx,cy) at radius r -- gfx_arc has no
+  // thickness parameter either, so this approximates the curve as a short run of
+  // thickLine segments (same workaround thickLine itself uses for gfx_line). Segment
+  // count scales with the swept angle so it stays smooth at any sweep length; dial arcs
+  // are short enough that this is cheap. Uses the current gfx_r/g/b/a, same contract as
+  // thickLine.
+  function drawArcThick(cx, cy, r, ang1, ang2, hw) local(steps, i, a0, a1, x0, y0, x1, y1) (
+    steps = max(1, ceil(abs(ang2-ang1) / 0.12));
+    i = 0;
+    loop(steps,
+      a0 = ang1 + (ang2-ang1) * (i/steps);
+      a1 = ang1 + (ang2-ang1) * ((i+1)/steps);
+      x0 = cx + r*cos(a0); y0 = cy + r*sin(a0);
+      x1 = cx + r*cos(a1); y1 = cy + r*sin(a1);
+      thickLine(x0, y0, x1, y1, hw);
+      i += 1;
+    );
+  );
+
+  // Effective side count for rhythm rIdx: just r_sides, clamped defensively so a bad
+  // upstream value can never make a vertex loop run past MAXSIDES. When auto mode is on,
+  // triggerOnset() below writes its stable estimate directly into r_sides -- there's no
+  // separate "auto value" to fall back to, so this is always the single source of truth
+  // for @block (edge math), the MIDI/audio onset handler, and @gfx (drawing), and it's
+  // also exactly what the Sides dial in the edit panel shows/edits. Pure expression (no
+  // bare-global temp), so it's safe to call from both the audio thread and the UI thread
+  // without a cross-thread variable collision.
+  function effSides(rIdx) (
+    max(2, min(MAXSIDES, r_sides[rIdx]|0));
+  );
+
+  // Nearest "simple fraction" match for an onset's ratio to the current grid's expected
+  // slot duration (see triggerOnset below). Candidate set covers halves/quarters (an
+  // inserted 8th/16th note within an otherwise-straight grid) and thirds (a triplet-feel
+  // insertion -- same mechanism, no tuplet-specific code needed: a triplet is just an onset
+  // landing at 1/3 or 2/3 of the expected slot). Returns the matched fraction, or -1 if
+  // nothing is within RATIO_TOL. Kept deliberately small -- extend only if real test
+  // material needs finer subdivisions than these (see smart_subdivisions.md).
+  function nearestSimpleRatio(ratio) local(d, best, bestD) (
+    best = -1; bestD = RATIO_TOL;
+    d = abs(ratio - 0.25); d < bestD ? ( bestD = d; best = 0.25; );
+    d = abs(ratio - 1/3);  d < bestD ? ( bestD = d; best = 1/3;  );
+    d = abs(ratio - 0.5);  d < bestD ? ( bestD = d; best = 0.5;  );
+    d = abs(ratio - 2/3);  d < bestD ? ( bestD = d; best = 2/3;  );
+    d = abs(ratio - 0.75); d < bestD ? ( bestD = d; best = 0.75; );
+    best;
+  );
+
+  // Raw single-IOI subdivision re-estimate -- unchanged from the original design: derive a
+  // candidate side-count straight from one inter-onset interval, and only let it overwrite
+  // r_sides once the SAME candidate has been re-confirmed for REQ_STREAK_BEATS worth of
+  // elapsed beat-time (not event count -- a plain event-count streak was biased toward high
+  // candidates: a high candidate (short ioi) racks up its confirming onsets far faster in
+  // wall-clock time than a correct, slower candidate (long ioi) can, so a brief burst of
+  // spurious fast onsets could latch a high value that then took a long time for the true,
+  // slower rhythm to out-vote -- this is what caused auto mode to get stuck high and rarely
+  // come back down. Summing ioi instead of counting events means any candidate needs the
+  // same amount of confirming beat-time regardless of its own speed, removing that bias).
+  // Extracted out of triggerOnset() so the on-grid and genuinely-no-match paths below can
+  // both call it without duplicating this logic.
+  function reestimate(rIdx, ioi) local(cand) (
+    cand = floor(L / ioi + 0.5);
+    cand = max(2, min(MAXSIDES, cand));
+    cand === candN[rIdx] ? streakBeats[rIdx] += ioi : ( candN[rIdx] = cand; streakBeats[rIdx] = ioi; );
+    // Only overwritten while this rhythm isn't locked -- detection still runs
+    // continuously on every channel (so autoconfigure can see activity on disabled
+    // channels too), but a locked rhythm's Sides dial is never touched.
+    (!r_lock[rIdx] && streakBeats[rIdx] >= REQ_STREAK_BEATS) ? r_sides[rIdx] = candN[rIdx];
+  );
+
+  // Shared onset handler: flashes rhythm rIdx's current corner and feeds the subdivision
+  // estimator. Called identically from an audio transient (@sample) and a MIDI hit
+  // (@block) so both input types "count the same way", per design. All working state is
+  // local() so calls from the two different sections never share storage.
+  //
+  // Each qualifying onset is classified against the grid ALREADY confirmed for this rhythm
+  // (effSides(rIdx)), not from scratch, before it's allowed to touch reestimate() -- this is
+  // what makes detection tolerant of real variation (see smart_subdivisions.md): an onset
+  // close to a full grid slot is a normal beat; one close to a simple fraction of a grid
+  // slot (nearestSimpleRatio) is an embellishment/tuplet of the CURRENT shape and must not
+  // perturb it -- only an onset that matches neither still feeds reestimate(), which is what
+  // lets the shape genuinely change when the input really has become a different
+  // subdivision rather than just decorating the old one.
+  //
+  // The "grid-consistent variation" branch also tracks how long the SAME matched fraction
+  // keeps recurring (varFrac/varStreakBeats, see VAR_STREAK_BEATS above) -- a wrong confirmed
+  // grid produces an identical fractional ratio on every onset with nothing to reset the
+  // streak, so past VAR_STREAK_BEATS it's promoted to a real reestimate() call instead of
+  // being absorbed forever. On-grid hits and genuine mismatches both reset the streak, since
+  // either is evidence the current apparent "variation" isn't a stuck wrong grid.
+  function triggerOnset(rIdx) local(ioi, expectedIOI, ratio, matchedFrac) (
+    r_lastEdge[rIdx] = r_edge[rIdx];
+    r_flash[rIdx]    = 1;
+
+    // Autoconfigure's hit-streak: counts onsets that keep recurring within
+    // autocfgWindowBeats of each other (computed once per block in @block, from the
+    // current time signature) -- gates adding a new auto-managed rhythm on more than a
+    // single stray blip. r_lastHitBeat is also what @block's grace-period check compares
+    // against to eventually remove a channel that's gone quiet.
+    r_lastHitBeat[rIdx] >= 0 && (beat_position - r_lastHitBeat[rIdx]) < autocfgWindowBeats ? r_hitStreak[rIdx] += 1 : r_hitStreak[rIdx] = 1;
+    r_lastHitBeat[rIdx] = beat_position;
+
+    onsetLastBeat[rIdx] >= 0 ? (
+      ioi = beat_position - onsetLastBeat[rIdx];
+      ioi > minIOIBeats ? (
+        expectedIOI = L / effSides(rIdx);
+        ratio       = ioi / expectedIOI;
+
+        abs(ratio - 1) < GRID_TOL ? (
+          reestimate(rIdx, ioi);
+          varFrac[rIdx] = -1; varStreakBeats[rIdx] = 0;
+        ) : (
+          matchedFrac = nearestSimpleRatio(ratio);
+          matchedFrac < 0 ? (
+            reestimate(rIdx, ioi);
+            varFrac[rIdx] = -1; varStreakBeats[rIdx] = 0;
+          ) : (
+            matchedFrac === varFrac[rIdx] ? varStreakBeats[rIdx] += ioi : ( varFrac[rIdx] = matchedFrac; varStreakBeats[rIdx] = ioi; );
+            varStreakBeats[rIdx] >= VAR_STREAK_BEATS ? (
+              // Persistent, not an isolated embellishment -- the confirmed grid is
+              // probably wrong. Let it compete for a real re-estimate like any mismatch.
+              reestimate(rIdx, ioi);
+            );
+            // else: still within tolerance -- absorbed as an embellishment/tuplet. No
+            // visual for this right now (the fractal-edge notch was tried and reverted,
+            // see smart_subdivisions.md) -- just quietly protects the confirmed grid.
+          );
+        );
+
+        onsetLastBeat[rIdx] = beat_position;
+      );
+    ) : (
+      onsetLastBeat[rIdx] = beat_position;
+    );
+  );
+
+  // ---- UI helpers (all @gfx-only: read mouse_*, write gfx_*) ----
+
+  function pointInRect(px, py, rx, ry, rw, rh) (
+    px >= rx && px <= rx+rw && py >= ry && py <= ry+rh;
+  );
+
+  function pointInCircle(px, py, ccx, ccy, cr) (
+    (px-ccx)*(px-ccx) + (py-ccy)*(py-ccy) <= cr*cr;
+  );
+
+  // Three faders at different heights -- "edit configuration" glyph.
+  function drawEditIcon(icx, icy, iw, ih) local(x1, x2, x3) (
+    x1 = icx - iw*0.28; x2 = icx; x3 = icx + iw*0.28;
+    gfx_line(x1, icy-ih*0.35, x1, icy+ih*0.35, 1);
+    gfx_line(x2, icy-ih*0.35, x2, icy+ih*0.35, 1);
+    gfx_line(x3, icy-ih*0.35, x3, icy+ih*0.35, 1);
+    gfx_circle(x1, icy-ih*0.12, 3, 1, 1);
+    gfx_circle(x2, icy+ih*0.20, 3, 1, 1);
+    gfx_circle(x3, icy-ih*0.25, 3, 1, 1);
+  );
+
+  // Simple back-arrow glyph for leaving the edit panel.
+  function drawBackIcon(icx, icy, ir) (
+    gfx_line(icx+ir*0.5, icy-ir*0.6, icx-ir*0.5, icy, 1);
+    gfx_line(icx-ir*0.5, icy, icx+ir*0.5, icy+ir*0.6, 1);
+    gfx_line(icx-ir*0.5, icy, icx+ir*0.7, icy, 1);
+  );
+
+  // Padlock glyph: body rect + arc shackle with two legs. Closed = shackle straddles the
+  // body symmetrically. Open = the whole arc+left-leg rigidly rotate open about the
+  // anchored right leg (a fixed hinge point), the standard closed-vs-open padlock look.
+  // Caller sets color, same contract as the other icons here.
+  function drawLockIcon(icx, icy, ir, isLocked) local(bodyW, bodyH, bodyTop, legLen, shR, rot, Px, Py, dx, dy, Cx, Cy, a1, a2, lx, ly, rx, ry, ldx, ldy, rdx, rdy) (
+    bodyW = ir*1.5; bodyH = ir*1.1;
+    bodyTop = icy + ir*0.05;
+    legLen = bodyH*0.3;
+    shR = ir*0.6;
+
+    // Right leg is always anchored here -- the hinge the shackle swings open about.
+    Px = icx + shR; Py = bodyTop;
+    a1 = $pi; a2 = 2*$pi;
+    rot = isLocked ? 0 : 0.9;
+
+    dx = icx - Px; dy = bodyTop - Py;   // vector from hinge to the closed-position center
+    Cx = Px + dx*cos(rot) - dy*sin(rot);
+    Cy = Py + dx*sin(rot) + dy*cos(rot);
+    a1 += rot; a2 += rot;
+
+    gfx_arc(Cx, Cy, shR, a1, a2, 1);
+
+    lx = Cx + shR*cos(a1); ly = Cy + shR*sin(a1);
+    ldx = sin(a1); ldy = -cos(a1);
+    gfx_line(lx, ly, lx + ldx*legLen, ly + ldy*legLen, 1);
+
+    rx = Cx + shR*cos(a2); ry = Cy + shR*sin(a2);
+    rdx = -sin(a2); rdy = cos(a2);
+    gfx_line(rx, ry, rx + rdx*legLen, ry + rdy*legLen, 1);
+
+    gfx_rect(icx - bodyW*0.5, bodyTop, bodyW, bodyH);
+  );
+
+  // Filled rect button with a centered label, themed on/off. Hit-testing is the caller's
+  // job (pointInRect against the same x/y/w/h) since EEL2 has no return-by-reference.
+  function drawToggle(bx, by, bw, bh, isOn, labelStr) (
+    isOn ? ( gfx_r=THEME_R; gfx_g=THEME_G; gfx_b=THEME_B; ) : ( gfx_r=0.22; gfx_g=0.22; gfx_b=0.25; );
+    gfx_a = 1;
+    gfx_rect(bx, by, bw, bh);
+    isOn ? ( gfx_r=0.08; gfx_g=0.08; gfx_b=0.08; ) : ( gfx_r=0.75; gfx_g=0.75; gfx_b=0.78; );
+    gfx_x = bx + bw*0.5 - strlen(labelStr)*3; gfx_y = by + bh*0.5 - 4;
+    gfx_drawstr(labelStr);
+  );
+
+  // Rotary dial/knob: dark track ring, a filled themed progress arc from the sweep's start
+  // up to the current value, a bold pointer + tip dot, and a centered label below. Sweep is
+  // -135deg..+135deg (270deg) for frac01 0..1, matching the previous version. numTicks>1
+  // draws that many evenly-spaced radial tick marks across the sweep (pass the count of
+  // discrete positions the value can land on, e.g. 10 for a 3..12 integer range; pass 0 or
+  // 1 for a continuous control like Hue, which draws no ticks). Drag handling lives in
+  // @gfx, this only draws.
+  function drawDial(dcx, dcy, dr, frac01, labelStr, numTicks) local(ang0, ang1, angNow, tik, tang, tpx1, tpy1, tpx2, tpy2, px, py) (
+    ang0 = -2.356; ang1 = 2.356;
+
+    gfx_r=0.16; gfx_g=0.16; gfx_b=0.18; gfx_a=1;
+    gfx_circle(dcx, dcy, dr, 1, 1);
+    gfx_r=0.32; gfx_g=0.32; gfx_b=0.36; gfx_a=1;
+    drawArcThick(dcx, dcy, dr, ang0, ang1, 2);
+
+    numTicks > 1 ? (
+      gfx_r=0.55; gfx_g=0.55; gfx_b=0.6; gfx_a=1;
+      tik = 0;
+      loop(numTicks,
+        tang = ang0 + (ang1-ang0) * (tik/(numTicks-1));
+        tpx1 = dcx + (dr-6)*cos(tang); tpy1 = dcy + (dr-6)*sin(tang);
+        tpx2 = dcx + (dr+3)*cos(tang); tpy2 = dcy + (dr+3)*sin(tang);
+        gfx_line(tpx1, tpy1, tpx2, tpy2, 1);
+        tik += 1;
+      );
+    );
+
+    angNow = ang0 + frac01*(ang1-ang0);
+    gfx_r=THEME_R; gfx_g=THEME_G; gfx_b=THEME_B; gfx_a=1;
+    drawArcThick(dcx, dcy, dr, ang0, angNow, 3.5);
+
+    px = dcx + dr*0.8*cos(angNow); py = dcy + dr*0.8*sin(angNow);
+    thickLine(dcx, dcy, px, py, 2);
+    gfx_circle(px, py, 4, 1, 1);
+
+    gfx_r=0.85; gfx_g=0.85; gfx_b=0.88; gfx_a=1;
+    gfx_x = dcx - strlen(labelStr)*3; gfx_y = dcy + dr + 10;
+    gfx_drawstr(labelStr);
+  );
+
+  // Text-entry field: box + current text, themed border while focused, blinking caret at
+  // the end of the text while focused and showCaret is true. Char width is an approximate
+  // fixed-width guess (default gfx font) -- fine for caret placement, not exact metrics.
+  // Hit-testing/keyboard handling live in @gfx where this is called from; this only draws.
+  function drawTextField(bx, by, bw, bh, isFocused, str, showCaret) local(tw) (
+    isFocused ? ( gfx_r=THEME_R; gfx_g=THEME_G; gfx_b=THEME_B; ) : ( gfx_r=0.4; gfx_g=0.4; gfx_b=0.44; );
+    gfx_a = 1;
+    gfx_rect(bx, by, bw, bh);
+    gfx_r = 0.16; gfx_g = 0.16; gfx_b = 0.18;
+    gfx_rect(bx+1, by+1, bw-2, bh-2);
+    gfx_r = 0.9; gfx_g = 0.9; gfx_b = 0.92; gfx_a = 1;
+    gfx_x = bx + 8; gfx_y = by + bh*0.5 - 4;
+    gfx_drawstr(str);
+    isFocused && showCaret ? (
+      tw = strlen(str) * 8;
+      gfx_rect(bx + 8 + tw, by + bh*0.22, 1.5, bh*0.56);
+    );
+  );
+
+  // Names a channel after which input(s) have actually driven it (audio, MIDI, or both --
+  // r_audioSeen/r_midiSeen are "ever seen" flags updated unconditionally in @block/@sample
+  // regardless of enabled state). Shared by autoconfigure's add step (@block) so the
+  // naming logic exists in exactly one place.
+  function nameChannelBySource(c) (
+    r_audioSeen[c] && r_midiSeen[c] ? (
+      sprintf(NAME_BASE+c, "In %d, MIDI %d", c+1, c+1);
+    ) : r_audioSeen[c] ? (
+      sprintf(NAME_BASE+c, "In %d", c+1);
+    ) : (
+      sprintf(NAME_BASE+c, "MIDI %d", c+1);
+    );
+  );
+
+  // Draws one rhythm's full shape (edges, corner dots, label, trail, ball, corner-flash)
+  // at its normal concentric radius. Extracted out of the main-view per-rhythm loop so
+  // the legend hover feature (@gfx) can call it twice -- once for every enabled rhythm
+  // except the hovered one, then once more for the hovered one last, bringing it to the
+  // front (top z-order, since later draws paint over earlier ones) without needing any
+  // other change to draw order. Reads Rmax/gap/cx/cy/fadeSpanBeats, all computed once per
+  // frame in @gfx before this is ever called.
+  //
+  // Silence fade (fadeMul) replaces the old auto-disable-on-quiet behavior: rather than
+  // dropping r_enabled (which would freeze the ball and lose playhead sync), a rhythm
+  // that's gone quiet after being heard dims toward the background instead, linearly,
+  // starting immediately at the last hit and reaching fully transparent after
+  // FADE_TRAVERSALS complete traversals (fadeSpanBeats = FADE_TRAVERSALS * L) -- this is
+  // a plain re-derivation from beat_position - r_lastHitBeat every frame, no separate
+  // fade state to track, so opacity snaps straight back to fully opaque the instant a
+  // real hit arrives again. A rhythm that's never received any hit at all (r_lastHitBeat
+  // still -1) is NOT faded -- fading only applies after having been heard and then going
+  // quiet, not to a shape that simply hasn't started yet (e.g. a manually-enabled,
+  // input-less decorative shape). Locked rhythms (r_lock) are also exempt, consistent
+  // with Lock's existing "hands-off" meaning elsewhere.
+  function drawRhythmShape(ri) local(Nr, rad, i, j, ang, edge, ballx, bally, fadeMul) (
+    Nr  = effSides(ri);
+    rad = Rmax * (1 - ri*gap);
+
+    !r_lock[ri] && r_lastHitBeat[ri] >= 0 ? (
+      fadeMul = max(0, 1 - (beat_position - r_lastHitBeat[ri]) / fadeSpanBeats);
+    ) : (
+      fadeMul = 1;
+    );
+
+    i = 0;
+    loop(Nr,
+      ang = -($pi*0.5) + i * 2*$pi/Nr;
+      vx[i|0] = cx + rad*cos(ang);
+      vy[i|0] = cy + rad*sin(ang);
+      i += 1;
+    );
+
+    // Polygon edges, ~10px thick (2x the original 5px) -- gfx_line has no thickness
+    // param, so this is a rotated filled quad. Fixed brightness -- no audio-energy
+    // modulation here.
+    hsv2rgb(r_hue[ri], 0.55, 0.85);
+    gfx_a = fadeMul;
+    i = 0;
+    loop(Nr,
+      j = (i + 1) % Nr;
+      thickLine(vx[i|0], vy[i|0], vx[j|0], vy[j|0], 5);
+      i += 1;
+    );
+
+    // Corner dots.
+    hsv2rgb(r_hue[ri], 0.55, 1);
+    gfx_a = fadeMul;
+    i = 0;
+    loop(Nr,
+      gfx_circle(vx[i|0], vy[i|0], 6, 1, 1);
+      i += 1;
+    );
+
+    // Per-shape label above the top corner (corner 0 is always at the top).
+    hsv2rgb(r_hue[ri], 0.5, 1);
+    gfx_a = fadeMul;
+    gfx_x = vx[0] - 4; gfx_y = vy[0] - 18;
+    gfx_printf("%d", ri + 1);
+
+    // Short fading trail at the previous frame's ball position.
+    (r_trailx[ri] !== 0 || r_traily[ri] !== 0) ? (
+      hsv2rgb(r_hue[ri], 0.3, 1);
+      gfx_a = 0.3 * fadeMul;
+      gfx_circle(r_trailx[ri], r_traily[ri], 4, 1, 1);
+      gfx_a = 1;
+    );
+
+    // Ball riding the current edge -- same color as the polygon edges.
+    edge = r_edge[ri]|0;
+    j    = (edge + 1) % Nr;
+    ballx = vx[edge|0] + (vx[j|0] - vx[edge|0]) * r_fracp[ri];
+    bally = vy[edge|0] + (vy[j|0] - vy[edge|0]) * r_fracp[ri];
+
+    hsv2rgb(r_hue[ri], 0.55, 0.85);
+    gfx_a = fadeMul;
+    gfx_circle(ballx, bally, 12, 1, 1);
+
+    // Decaying flash on the corner most recently hit (transport, audio onset, MIDI).
+    r_flash[ri] > 0.02 ? (
+      hsv2rgb(r_hue[ri], 0.15, 1);
+      gfx_a = r_flash[ri] * r_flash[ri] * fadeMul;
+      gfx_circle(vx[edge|0], vy[edge|0], 10 + 32*r_flash[ri], 1, 1);
+      gfx_a = 1;
+    );
+
+    r_trailx[ri] = ballx;
+    r_traily[ri] = bally;
+  );
+
+  // MAXSIDES must match the Sides dial's upper bound (12). NUMR matches the 8 in/out
+  // pins above. Both audio channel r and MIDI channel r feed rhythm r by the same fixed
+  // convention -- no mapping control needed for either.
+  MAXSIDES = 12;
+  NUMR = 8;
+
+  // Numbered string slots NAME_BASE..NAME_BASE+NUMR-1 hold each rhythm's display name,
+  // user-editable in the edit panel's rename field (see drawTextField above and the
+  // keyboard-handling block in @gfx).
+  NAME_BASE = 200;
+  MAX_NAME_LEN = 24;
+
+  // Theme accent (amber) used for all interactive UI chrome in the edit panel, kept
+  // visually distinct from the per-rhythm hues used for shapes/legend/names.
+  THEME_R = 0.95; THEME_G = 0.65; THEME_B = 0.15;
+
+  freemem    = 0;
+  vx         = freemem; freemem += MAXSIDES;
+  vy         = freemem; freemem += MAXSIDES;
+  r_enabled  = freemem; freemem += NUMR;
+  r_sides    = freemem; freemem += NUMR;
+  r_hue      = freemem; freemem += NUMR;
+  r_lock     = freemem; freemem += NUMR;
+  r_lastEdge = freemem; freemem += NUMR;
+  r_flash    = freemem; freemem += NUMR;
+  r_edge     = freemem; freemem += NUMR;
+  r_fracp    = freemem; freemem += NUMR;
+  r_fastEnv  = freemem; freemem += NUMR;
+  r_energy   = freemem; freemem += NUMR;
+  r_onLatch  = freemem; freemem += NUMR;
+  onsetLastBeat = freemem; freemem += NUMR;
+  candN       = freemem; freemem += NUMR;
+  streakBeats = freemem; freemem += NUMR;
+  varFrac       = freemem; freemem += NUMR;
+  varStreakBeats = freemem; freemem += NUMR;
+  r_trailx   = freemem; freemem += NUMR;
+  r_traily   = freemem; freemem += NUMR;
+  r_peak     = freemem; freemem += NUMR;
+  r_refrac   = freemem; freemem += NUMR;
+  r_audioSeen = freemem; freemem += NUMR;
+  r_midiSeen  = freemem; freemem += NUMR;
+  r_lastHitBeat = freemem; freemem += NUMR;
+  r_hitStreak   = freemem; freemem += NUMR;
+
+  // Onset detector: fast envelope must exceed (slow envelope * ratio + floor) to fire.
+  // The floor is ADAPTIVE -- a fraction of each channel's own recent peak level
+  // (r_peak, a slow peak-hold) rather than a fixed absolute number. A fixed floor meant
+  // quiet material (or a quiet sample choice) could sit below it and never trigger at
+  // all, while loud material had a floor so low it barely mattered -- i.e. detection
+  // quality depended heavily on which sample you fed it. onsetFloorMin is just a safety
+  // floor against triggering on near-silence/noise.
+  onsetRatio     = 1.6;
+  onsetFloorMin  = 0.004;
+  onsetFloorFrac = 0.10;
+
+  // Minimum time between onset triggers on a channel, regardless of envelope shape.
+  // Needed because a low-pitched/bass note's own waveform ripple can cross the fast/slow
+  // threshold multiple times per cycle of its fundamental (a ~40Hz bass note ripples
+  // roughly every ~12ms, well within the 3ms fast-envelope time constant) -- without a
+  // hard refractory period that reads as several spurious re-triggers during one note's
+  // sustain instead of one clean onset at its attack.
+  REFRAC_MS = 40;
+
+  // Subdivision estimator: ignore onsets closer together than this (beats), and require a
+  // candidate to keep matching itself for this many beats of elapsed time -- not a raw
+  // event count, see triggerOnset() -- before trusting it as a new estimate (hysteresis).
+  minIOIBeats      = 0.12;
+  REQ_STREAK_BEATS = 3;
+
+  // Onset-vs-grid classification (see triggerOnset()/nearestSimpleRatio()): an onset whose
+  // ratio to the current grid's expected slot is within GRID_TOL of 1.0 is a normal beat;
+  // one within RATIO_TOL of a simple fraction is a grid-consistent embellishment/tuplet and
+  // does NOT feed reestimate(). RATIO_TOL is kept under half the smallest gap between
+  // candidate fractions (~0.083, between 1/4-1/3 and 2/3-3/4) so two adjacent candidates
+  // can't both plausibly match the same onset.
+  GRID_TOL  = 0.12;
+  RATIO_TOL = 0.05;
+
+  // Guards against a false-attractor in the classification above: if the CONFIRMED grid is
+  // itself wrong (e.g. locked at 3 while the input is really a straight 4), every onset of
+  // that real 4-pulse lands at the exact same ratio (3/4) relative to the wrong grid --
+  // which is indistinguishable, onset by onset, from a genuine recurring embellishment, so
+  // it would otherwise be absorbed by nearestSimpleRatio() forever and never reach
+  // reestimate(). The difference is persistence: a real embellishment is occasional (most
+  // surrounding onsets are still on-grid, resetting the streak below); a wrong grid produces
+  // the SAME fractional match on every single onset with nothing to reset it. Once the same
+  // matched fraction has recurred for VAR_STREAK_BEATS beats with no on-grid hit in between,
+  // stop treating it as tolerated variation and let it feed reestimate() like any other
+  // mismatch. Deliberately larger than REQ_STREAK_BEATS -- tolerated variation should need a
+  // materially higher bar to overturn a confirmed grid than a plain mismatch does.
+  VAR_STREAK_BEATS = 8;
+
+  // Autoconfigure (see @block, always on): ADD requires a channel to show this many onsets
+  // recurring within a rolling window before it's trusted as a real source, not one stray
+  // blip (a single sample crossing the audio "seen" threshold used to be enough, which
+  // could add a layer from noise on an unused input).
+  AUTOCFG_MIN_HITS = 3;
+
+  // Silence fade (see drawRhythmShape() in @gfx): rather than auto-disabling a rhythm
+  // that's gone quiet (which used to be AUTOCFG_GRACE_MEASURES's job before removal --
+  // freezing the ball and losing playhead sync isn't actually nicer than just staying
+  // visible), a rhythm that's been heard before and then gone quiet dims toward the
+  // background instead, staying fully enabled and transport-synced the whole time.
+  // Linear, starting immediately at the last hit (no grace plateau) and reaching fully
+  // transparent after FADE_TRAVERSALS complete shape traversals (a "traversal" = L beats,
+  // one full lap -- every rhythm shares the same cycle length L, so this is the same
+  // beat-span regardless of that rhythm's own side count). Opacity is restored instantly
+  // the moment a real hit arrives again, since it's just re-deriving from
+  // beat_position - r_lastHitBeat every frame, not tracking any separate fade state.
+  FADE_TRAVERSALS = 4;
+
+  // Performance: only run the per-sample envelope/onset detector 1 sample in THROTTLE_K
+  // (coefficients below are compensated so the real-time time constants stay correct).
+  THROTTLE_K  = 4;
+  throttleCtr = 0;
+
+  prevPhase01 = -1;
+  cyclePulse  = 0;
+  lastSrate   = 0;
+
+  // UI state (all @gfx-only).
+  uiMode        = 0;   // 0 = main visualization, 1 = edit configuration panel
+  prevMouseDown = 0;
+  dragTarget    = 0;   // 0 none, 1 = sides dial, 2 = hue dial
+  sel           = 0;   // currently selected rhythm (0..NUMR-1) for the edit panel
+  editingName   = 0;   // whether the rename text field is currently focused/editing
+  gfxFrame      = 0;   // free-running frame counter, used only for the rename caret blink
+  ddOpen        = 0;   // whether the custom Selected Rhythm dropdown list is expanded
+  sidesPulseEdge = -1; // last "would-be corner" index seen for the edit panel's Sides
+                        // preview pulse (see @gfx) -- -1 so the first frame never spuriously
+                        // fires on a stale edge from a different rhythm/N
+  sidesPulseLife = 0;  // decay envelope for that pulse, frame-based (see @gfx)
+
+  // Defaults: nothing enabled and nothing locked -- autoconfigure always runs, so the
+  // plugin starts silent and configures itself as soon as it hears real signal,
+  // unless/until the user locks a rhythm to protect it from further automatic changes.
+  // NOTE: "ri" here is @init-only (runs once, before any other section can run), so
+  // reusing it as a loop counter is safe -- unlike @block/@sample/@gfx, which run
+  // concurrently on different threads and each get their OWN counter names below.
+  ri = 0;
+  loop(NUMR,
+    r_enabled[ri]  = 0;
+    r_sides[ri]    = 3 + ri;
+    r_hue[ri]      = ri / NUMR;
+    r_lock[ri]     = 0;
+    r_lastEdge[ri] = -1;
+    r_flash[ri]    = 0;
+    r_fastEnv[ri]  = 0;
+    r_energy[ri]   = 0;
+    r_onLatch[ri]  = 0;
+    onsetLastBeat[ri] = -1;
+    candN[ri]         = 0;
+    streakBeats[ri]   = 0;
+    varFrac[ri]        = -1;
+    varStreakBeats[ri] = 0;
+    r_trailx[ri]       = 0;
+    r_traily[ri]       = 0;
+    r_peak[ri]         = 0;
+    r_refrac[ri]       = 0;
+    r_audioSeen[ri]    = 0;
+    r_midiSeen[ri]     = 0;
+    r_lastHitBeat[ri]  = -1;
+    r_hitStreak[ri]    = 0;
+    sprintf(NAME_BASE + ri, "In %d", ri + 1);
+    ri += 1;
+  );
+
+@block
+  // Envelope-follower coefficients (fast ~3ms, slow ~150ms), compensated for the
+  // THROTTLE_K-sample gap between actual updates so the real-time constants stay correct.
+  // Recomputed here (rather than a one-shot @slider computation) so a genuine sample-rate
+  // change is still handled correctly now that ext_noinit=1 stops @init from doing it
+  // automatically -- and now that there's no @slider section at all to react to anything.
+  srate !== lastSrate ? (
+    fastA = 1 - exp(-THROTTLE_K / (srate * 0.003));
+    slowA = 1 - exp(-THROTTLE_K / (srate * 0.15));
+    peakDecay   = exp(-THROTTLE_K / (srate * 1.5));
+    refracTicks = max(1, (srate * (REFRAC_MS/1000) / THROTTLE_K)|0);
+    lastSrate = srate;
+  );
+
+  // Shared cycle length in beats always follows the project's time signature -- no UI
+  // control for this (kept hidden per an earlier request), so there's nothing to read a
+  // slider for.
+  L = ts_num;
+  L <= 0 ? L = 4;
+
+  // Window (beats) within which two onsets count as the same recurring streak for
+  // autoconfigure's hit-tracking (see triggerOnset()) -- scales with the time
+  // signature so a slow tempo/long measure doesn't make every onset look like a gap.
+  autocfgWindowBeats = 2 * L;
+
+  phase01 = beat_position / L;
+  phase01 -= floor(phase01);
+
+  decay = exp(-samplesblock / (srate * 0.15));
+
+  // Shared "realign" pulse: fires whenever the cycle phase wraps back to 0.
+  prevPhase01 >= 0 && phase01 < prevPhase01 ? cyclePulse = 1;
+  prevPhase01 = phase01;
+  cyclePulse *= decay;
+
+  // "bri"/"bedge" are @block's OWN counters -- never shared with @gfx's "ri"/"edge".
+  // (Root-cause fix from an earlier round: this file used to reuse "ri" and "edge" as
+  // bare globals in both @block and @gfx. Those sections run on different threads with
+  // no synchronization, so one thread's loop could stomp the other's counter
+  // mid-iteration and produce a wild array index -- that's what corrupted the
+  // per-rhythm config arrays.)
+  bri = 0;
+  loop(NUMR,
+    r_enabled[bri] ? (
+      curN  = effSides(bri);
+      posN  = phase01 * curN;
+      bedge = floor(posN)|0;
+      bedge >= curN ? bedge = curN - 1;
+      r_fracp[bri] = posN - bedge;
+
+      // Corner hit: edge index just advanced -> (re)start this rhythm's flash decay.
+      bedge !== r_lastEdge[bri] ? (
+        r_flash[bri]    = 1;
+        r_lastEdge[bri] = bedge;
+      );
+      r_edge[bri] = bedge;
+    );
+    r_flash[bri] *= decay;
+    bri += 1;
+  );
+
+  // MIDI: a note-on is treated exactly like an audio transient for the mapped rhythm --
+  // same triggerOnset() call, same corner-flash + subdivision-estimator pipeline -- just
+  // routed by MIDI channel (fixed convention, matching the audio-channel mapping). "Seen"
+  // tracking runs regardless of whether the rhythm is enabled yet, so autoconfigure can
+  // find channels with MIDI activity that aren't configured. Every received event is
+  // resent so the plugin stays MIDI-transparent.
+  while (midirecv(offset, msg1, msg2, msg3)) (
+    (msg1 & $xF0) === $x90 && msg3 != 0 ? (
+      midiCh = msg1 & $x0F;
+      midiCh < NUMR ? (
+        r_midiSeen[midiCh] = 1;
+        r_enabled[midiCh] ? triggerOnset(midiCh);
+      );
+    );
+    midisend(offset, msg1, msg2, msg3);
+  );
+
+  // Autoconfigure: always on -- continuously adds rhythms once they show a real recurring
+  // signal (r_hitStreak, fed by triggerOnset() above/@sample below). No REMOVE side
+  // anymore -- a rhythm that goes quiet after being added just fades visually instead
+  // (see drawRhythmShape() in @gfx) rather than being auto-disabled here, so it stays
+  // enabled/transport-synced permanently once added. Never touches a locked rhythm
+  // (r_lock) -- Lock is the user's hands-off signal, independent of Enabled, and this
+  // loop treats it as an absolute exemption. Hue is left alone on add: every channel
+  // already has a permanently distinct hue assigned at @init regardless of enabled
+  // state, so newly-added ones are automatically colored differently from what's
+  // already showing.
+  bri = 0;
+  loop(NUMR,
+    !r_enabled[bri] && !r_lock[bri] && r_hitStreak[bri] >= AUTOCFG_MIN_HITS ? (
+      r_enabled[bri] = 1;
+      nameChannelBySource(bri);
+    );
+    bri += 1;
+  );
+
+@sample
+  // Per-channel fast/slow envelope: audio channel sri feeds rhythm sri (fixed convention).
+  // Read-only w.r.t. spl(): nothing is written back, so audio passes through unchanged.
+  // r_energy (slow) drives the input-level meter (edit panel only); fast-vs-slow crossing
+  // is a cheap percussive onset detector that calls the same triggerOnset() the MIDI path
+  // uses. Throttled to 1 sample in THROTTLE_K to keep the audio-thread cost down.
+  // "sri" is @sample's OWN counter -- see the note in @block about why these can't be
+  // shared with @gfx's "ri".
+  throttleCtr = (throttleCtr + 1) % THROTTLE_K;
+  throttleCtr === 0 ? (
+    sri = 0;
+    loop(NUMR,
+      rect = abs(spl(sri));
+      rect > 0.01 ? r_audioSeen[sri] = 1;
+
+      r_fastEnv[sri] += (rect - r_fastEnv[sri]) * fastA;
+      r_energy[sri]  += (rect - r_energy[sri])  * slowA;
+
+      rect > r_peak[sri] ? r_peak[sri] = rect : r_peak[sri] *= peakDecay;
+      dynFloor = max(onsetFloorMin, r_peak[sri] * onsetFloorFrac);
+
+      r_refrac[sri] > 0 ? r_refrac[sri] -= 1;
+
+      r_fastEnv[sri] > r_energy[sri]*onsetRatio + dynFloor ? (
+        (!r_onLatch[sri]) && (r_refrac[sri] <= 0) ? (
+          triggerOnset(sri);
+          r_onLatch[sri] = 1;
+          r_refrac[sri]  = refracTicks;
+        );
+      ) : (
+        r_onLatch[sri] = 0;
+      );
+
+      sri += 1;
+    );
+  );
+
+@gfx 500 500
+  gfxFrame  += 1;
+  mouseDown  = (mouse_cap & 1) > 0;
+  mouseClick = mouseDown && !prevMouseDown;
+
+  cx = gfx_w * 0.5;
+  cy = gfx_h * 0.5;
+
+  // Icon buttons scale gently with window size but stay within a sane range.
+  btnSize   = max(22, min(gfx_w, gfx_h) * 0.06);
+  btnMargin = btnSize * 0.4;
+  editBtnX = gfx_w - btnMargin - btnSize; editBtnY = btnMargin;
+  backBtnX = btnMargin; backBtnY = btnMargin;
+
+  gfx_r = 0.06; gfx_g = 0.06; gfx_b = 0.08; gfx_a = 1;
+  gfx_rect(0, 0, gfx_w, gfx_h);
+
+  uiMode === 0 ? (
+
+    // =========================== MAIN VIEW ===========================
+    // Shapes only + a color/name legend + the Edit Configuration icon button. No meters,
+    // no footer -- kept deliberately uncluttered; all of that lives in the edit panel now.
+    Rmax = min(gfx_w, gfx_h) * 0.42;
+    gap  = 0.09;
+    fadeSpanBeats = FADE_TRAVERSALS * L;
+    legRowW = min(gfx_w - 12, 200);
+
+    gfx_r = 0.3; gfx_g = 0.3; gfx_b = 0.35; gfx_a = 1;
+    gfx_circle(cx, cy, 2, 1, 1);
+    cyclePulse > 0.02 ? (
+      gfx_r = 0.9; gfx_g = 0.9; gfx_b = 0.95;
+      gfx_a = cyclePulse * 0.5;
+      gfx_circle(cx, cy, 10 + (1 - cyclePulse)*50, 0, 1);
+      gfx_a = 1;
+    );
+
+    // Legend hover test (geometry only -- the legend itself is drawn further down, after
+    // the shapes). Computed here, before the shapes, so the shape-drawing pass below
+    // already knows which rhythm (if any) to bring to the front this frame.
+    hoverLegend = -1;
+    legY = 8;
+    ri = 0;
+    loop(NUMR,
+      r_enabled[ri] ? (
+        pointInRect(mouse_x, mouse_y, 4, legY-2, legRowW, 14) ? hoverLegend = ri;
+        legY += 12;
+      );
+      ri += 1;
+    );
+
+    // "ri" below is exclusive to @gfx -- not shared with @block/@sample. Draw every
+    // enabled shape except the hovered one, then the hovered one last, so it renders on
+    // top where the concentric shapes overlap (later draws paint over earlier ones).
+    ri = 0;
+    loop(NUMR,
+      (r_enabled[ri] && ri !== hoverLegend) ? drawRhythmShape(ri);
+      ri += 1;
+    );
+    hoverLegend >= 0 ? drawRhythmShape(hoverLegend);
+
+    // Detected "time signature" readout for the hovered rhythm -- N sides per L-beat
+    // cycle, shown centered (all rhythms share the same center point, so there's only
+    // ever one of these on screen at a time). gfx_setfont(-1) at the end reverts to the
+    // default font so nothing drawn afterward this frame (legend, icon button) inherits
+    // the larger size.
+    hoverLegend >= 0 ? (
+      sprintf(#tsLabel, "%d/%d", r_sides[hoverLegend]|0, L|0);
+      tsw = strlen(#tsLabel) * 15;
+      gfx_setfont(2, "Arial", 26);
+      gfx_r = 0.08; gfx_g = 0.08; gfx_b = 0.08; gfx_a = 0.75;
+      gfx_rect(cx - tsw*0.5 - 10, cy - 18, tsw + 20, 36);
+      hsv2rgb(r_hue[hoverLegend], 0.15, 1);
+      gfx_a = 1;
+      gfx_x = cx - tsw*0.5; gfx_y = cy - 13;
+      gfx_drawstr(#tsLabel);
+      gfx_setfont(-1);
+    );
+
+    // Legend: color swatch + name, highlighted while hovered.
+    legY = 8;
+    ri = 0;
+    loop(NUMR,
+      r_enabled[ri] ? (
+        ri === hoverLegend ? (
+          gfx_r = 1; gfx_g = 1; gfx_b = 1; gfx_a = 0.08;
+          gfx_rect(4, legY-2, legRowW, 14);
+        );
+        hsv2rgb(r_hue[ri], 0.6, 1);
+        gfx_a = 1;
+        gfx_rect(8, legY, 10, 10);
+        gfx_r = 0.85; gfx_g = 0.85; gfx_b = 0.85; gfx_a = 1;
+        gfx_x = 22; gfx_y = legY;
+        gfx_drawstr(NAME_BASE + ri);
+        legY += 12;
+      );
+      ri += 1;
+    );
+
+    // Icon button: Edit Configuration -- autoconfigure has no toggle anymore (always on),
+    // so this is the only button left in the main view.
+    gfx_r = 0.16; gfx_g = 0.16; gfx_b = 0.18; gfx_a = 1;
+    gfx_rect(editBtnX, editBtnY, btnSize, btnSize);
+    gfx_r = THEME_R; gfx_g = THEME_G; gfx_b = THEME_B; gfx_a = 1;
+    drawEditIcon(editBtnX + btnSize*0.5, editBtnY + btnSize*0.5, btnSize*0.7, btnSize*0.7);
+
+    mouseClick && pointInRect(mouse_x, mouse_y, editBtnX, editBtnY, btnSize, btnSize) ? uiMode = 1;
+
+  ) : (
+
+    // ===================== EDIT CONFIGURATION PANEL =====================
+    // Every control here reads/writes the r_*[sel] arrays DIRECTLY -- there is no
+    // separate slider-shadow layer to keep in sync (an earlier version had one, backed
+    // by real JSFX sliders; those sliders are gone now so the arrays are the only
+    // representation of this state, which is simpler and can't drift out of sync).
+
+    // Layout geometry computed up front, before any click handling, so the pending-
+    // rename-edit commit below can run before anything else this frame (dropdown pick,
+    // Back/Edit nav) gets a chance to change "sel" or leave the panel -- otherwise a
+    // commit could land on the wrong (newly-switched) rhythm's name, or be lost.
+    panelY = btnMargin*2 + btnSize + 10;
+    ddW = min(gfx_w*0.7, 260); ddH = 26;
+    ddX = cx - ddW*0.5; ddY = panelY;
+    ddRowH  = 24;
+    ddListH = ddRowH * NUMR;
+    nameW = ddW; nameH = 26;
+    nameX = cx - nameW*0.5; nameY = ddY + ddH + 10;
+
+    // The dropdown list, when open, must consume this frame's click exclusively --
+    // snapshot whether it WAS open before any other widget's click handler below runs, so
+    // a click that closes the list (whether by picking a row or clicking away) can never
+    // also land on a control underneath it this same frame. Every other click check in
+    // this panel is gated on !ddWasOpen for exactly that reason.
+    ddWasOpen = ddOpen;
+    ddWasOpen && mouseClick ? (
+      pointInRect(mouse_x, mouse_y, ddX, ddY+ddH, ddW, ddListH) ? (
+        sel = min(NUMR-1, max(0, floor((mouse_y - (ddY+ddH)) / ddRowH)))|0;
+      );
+      ddOpen = 0;
+    );
+
+    editingName && mouseClick && !ddWasOpen && !pointInRect(mouse_x, mouse_y, nameX, nameY, nameW, nameH) ? (
+      sprintf(NAME_BASE + sel, "%s", #editBuf);
+      editingName = 0;
+    );
+
+    gfx_r = 0.85; gfx_g = 0.85; gfx_b = 0.88; gfx_a = 1;
+    gfx_x = cx - 62; gfx_y = btnMargin + btnSize*0.35;
+    gfx_drawstr("EDIT CONFIGURATION");
+
+    gfx_r = 0.16; gfx_g = 0.16; gfx_b = 0.18; gfx_a = 1;
+    gfx_rect(backBtnX, backBtnY, btnSize, btnSize);
+    gfx_rect(editBtnX, editBtnY, btnSize, btnSize);
+    gfx_r = THEME_R; gfx_g = THEME_G; gfx_b = THEME_B; gfx_a = 1;
+    drawBackIcon(backBtnX + btnSize*0.5, backBtnY + btnSize*0.5, btnSize*0.35);
+    drawEditIcon(editBtnX + btnSize*0.5, editBtnY + btnSize*0.5, btnSize*0.7, btnSize*0.7);
+
+    mouseClick && !ddWasOpen && (pointInRect(mouse_x, mouse_y, backBtnX, backBtnY, btnSize, btnSize) ||
+                   pointInRect(mouse_x, mouse_y, editBtnX, editBtnY, btnSize, btnSize)) ? ( uiMode = 0; ddOpen = 0; );
+
+    // Selected Rhythm dropdown -- custom-drawn (see the list render at the end of this
+    // panel, which draws last so it overlays everything else). Header shows the current
+    // selection; clicking it opens/closes the list; the list itself picks/closes above.
+    gfx_r = 0.16; gfx_g = 0.16; gfx_b = 0.18; gfx_a = 1;
+    gfx_rect(ddX, ddY, ddW, ddH);
+    hsv2rgb(r_hue[sel], 0.6, 1);
+    gfx_rect(ddX+6, ddY+ddH*0.5-5, 10, 10);
+    gfx_r = 0.9; gfx_g = 0.9; gfx_b = 0.9; gfx_a = 1;
+    gfx_x = ddX + 22; gfx_y = ddY + ddH*0.5 - 4;
+    gfx_drawstr(NAME_BASE + sel);
+    gfx_x = ddX + ddW - 14; gfx_y = ddY + ddH*0.5 - 4;
+    gfx_drawstr(ddOpen ? "^" : "v");
+
+    mouseClick && !ddWasOpen && pointInRect(mouse_x, mouse_y, ddX, ddY, ddW, ddH) ? ddOpen = 1;
+
+    // Rename field: click to focus (copies the current name into a scratch buffer so
+    // typing doesn't touch NAME_BASE+sel until committed), type to edit, Enter or a click
+    // anywhere else commits (handled above, before "sel" can change), Escape cancels.
+    editingName ? (
+      kc = gfx_getchar();
+      while (editingName && kc > 0) (
+        kc === 13 ? (
+          sprintf(NAME_BASE + sel, "%s", #editBuf);
+          editingName = 0;
+        ) : kc === 27 ? (
+          editingName = 0;
+        ) : kc === 8 ? (
+          strlen(#editBuf) > 0 ? strcpy_substr(#editBuf, #editBuf, 0, strlen(#editBuf) - 1);
+        ) : (
+          kc >= 32 && kc < 127 && strlen(#editBuf) < MAX_NAME_LEN ? str_setchar(#editBuf, strlen(#editBuf), kc);
+        );
+        kc = gfx_getchar();
+      );
+    );
+    drawTextField(nameX, nameY, nameW, nameH, editingName, editingName ? #editBuf : NAME_BASE + sel, (gfxFrame % 30) < 15);
+    mouseClick && !ddWasOpen && !editingName && pointInRect(mouse_x, mouse_y, nameX, nameY, nameW, nameH) ? (
+      strcpy(#editBuf, NAME_BASE + sel);
+      editingName = 1;
+    );
+
+    rowY = nameY + nameH + 14;
+
+    // Enabled toggle + Lock icon button, side by side.
+    togW = ddW*0.47; togH = 28;
+    tog1X = cx - ddW*0.5; tog2X = cx + ddW*0.5 - togW;
+    drawToggle(tog1X, rowY, togW, togH, r_enabled[sel] > 0.5, "ENABLED");
+    r_lock[sel] > 0.5 ? ( gfx_r=THEME_R; gfx_g=THEME_G; gfx_b=THEME_B; ) : ( gfx_r=0.22; gfx_g=0.22; gfx_b=0.25; );
+    gfx_a = 1;
+    gfx_rect(tog2X, rowY, togW, togH);
+    r_lock[sel] > 0.5 ? ( gfx_r=0.08; gfx_g=0.08; gfx_b=0.08; ) : ( gfx_r=0.75; gfx_g=0.75; gfx_b=0.78; );
+    drawLockIcon(tog2X + togW*0.5, rowY + togH*0.5, togH*0.38, r_lock[sel] > 0.5);
+
+    // Enabled and Lock are fully independent -- no side effect between the two (Lock
+    // alone controls whether autoconfigure is allowed to touch this rhythm).
+    mouseClick && !ddWasOpen && pointInRect(mouse_x, mouse_y, tog1X, rowY, togW, togH) ? r_enabled[sel] = r_enabled[sel] > 0.5 ? 0 : 1;
+    mouseClick && !ddWasOpen && pointInRect(mouse_x, mouse_y, tog2X, rowY, togW, togH) ? r_lock[sel]    = r_lock[sel]    > 0.5 ? 0 : 1;
+
+    // Sides / Hue dials, side by side. Drag vertically to adjust (standard knob feel).
+    dialR  = min(gfx_w, gfx_h) * 0.09;
+    dialY  = rowY + togH + 24 + dialR;
+    dial1X = cx - dialR - 30; dial2X = cx + dialR + 30;
+
+    // Sides preview pulse: fires whenever phase01*r_sides[sel] would cross a corner --
+    // exactly the math the live polygons use in @block, just computed here independently
+    // of whether this rhythm is actually enabled, so the dial pulses at the rate its
+    // configured N implies even for a disabled or not-yet-confirmed rhythm. Lets the user
+    // compare these pulses by eye against the input-level meter above to sanity-check
+    // whether Sides actually matches the real transients. Frame-based decay (not the
+    // per-block exp(-samplesblock/...) used elsewhere) since @gfx has no sample-accurate
+    // timing of its own -- this is a cosmetic aid, not audio-critical.
+    sidesN = max(2, min(MAXSIDES, r_sides[sel]|0));
+    sidesEdgeNow = floor(phase01 * sidesN)|0;
+    sidesEdgeNow >= sidesN ? sidesEdgeNow = sidesN - 1;
+    sidesEdgeNow !== sidesPulseEdge ? ( sidesPulseLife = 1; sidesPulseEdge = sidesEdgeNow; );
+    sidesPulseLife *= 0.85;
+
+    sidesFrac = (r_sides[sel] - 3) / 9;
+    drawDial(dial1X, dialY, dialR, sidesFrac, "SIDES", 10);
+    sidesPulseLife > 0.02 ? (
+      gfx_r = THEME_R; gfx_g = THEME_G; gfx_b = THEME_B;
+      gfx_a = sidesPulseLife * sidesPulseLife;
+      gfx_circle(dial1X, dialY, dialR + 6 + 14*sidesPulseLife, 0, 1);
+      gfx_a = 1;
+    );
+    gfx_r = 0.9; gfx_g = 0.9; gfx_b = 0.9; gfx_a = 1;
+    gfx_x = dial1X - 5; gfx_y = dialY - 6;
+    gfx_printf("%d", r_sides[sel]|0);
+
+    drawDial(dial2X, dialY, dialR, r_hue[sel], "HUE", 0);
+    hsv2rgb(r_hue[sel], 0.8, 1);
+    gfx_circle(dial2X, dialY, dialR*0.35, 1, 1);
+
+    mouseClick && !ddWasOpen && pointInCircle(mouse_x, mouse_y, dial1X, dialY, dialR) ? ( dragTarget = 1; dragStartY = mouse_y; dragStartVal = r_sides[sel]; );
+    mouseClick && !ddWasOpen && pointInCircle(mouse_x, mouse_y, dial2X, dialY, dialR) ? ( dragTarget = 2; dragStartY = mouse_y; dragStartVal = r_hue[sel]; );
+
+    dragTarget === 1 ? (
+      mouseDown ? (
+        r_sides[sel] = max(3, min(12, dragStartVal + (dragStartY - mouse_y)/6))|0;
+      ) : dragTarget = 0;
+    );
+    dragTarget === 2 ? (
+      mouseDown ? (
+        r_hue[sel] = max(0, min(1, dragStartVal + (dragStartY - mouse_y)/200));
+      ) : dragTarget = 0;
+    );
+
+    // Input level meter for the selected rhythm -- lives here only; it was distracting
+    // as a permanent per-shape glow on the main view. Deliberately exaggerated so a
+    // transient is unmistakable at a glance (this is what the Sides pulse below is meant
+    // to be compared against): driven by r_peak (the same fast attack/~1.5s-decay
+    // peak-hold @sample already tracks for the onset detector's adaptive floor -- an
+    // instantaneous max-hold, not the slow ~150ms r_energy envelope, so a hit visibly
+    // snaps the meter up rather than easing into it) through a sqrt curve. sqrt alone
+    // (no extra gain multiplier) is the point: its slope is steep near 0 and flattens
+    // toward 1, so quiet peaks get boosted a lot while r_peak=1 still maps to a full bar
+    // -- an earlier version also multiplied by a gain constant, which pushed already-loud
+    // material to a false full-scale reading well before it was actually near full scale.
+    meterW = ddW; meterH = 14;
+    meterX = cx - meterW*0.5; meterY = dialY + dialR + 34;
+    gfx_r = 0.85; gfx_g = 0.85; gfx_b = 0.85; gfx_a = 1;
+    gfx_x = meterX; gfx_y = meterY - 14;
+    gfx_drawstr("INPUT LEVEL");
+    gfx_r = 0.18; gfx_g = 0.18; gfx_b = 0.2; gfx_a = 1;
+    gfx_rect(meterX, meterY, meterW, meterH);
+    meterVal = min(1, sqrt(max(0, r_peak[sel])));
+    hsv2rgb(r_hue[sel], 0.6, 1);
+    gfx_rect(meterX, meterY, meterW*meterVal, meterH);
+
+    // Custom Selected Rhythm dropdown list -- drawn LAST so it overlays every other
+    // control in this panel (dials, toggles, meter) rather than being drawn underneath
+    // them. Click handling for it lives at the very top of this panel (ddWasOpen), not
+    // here -- this block only draws.
+    ddOpen ? (
+      gfx_r = 0.1; gfx_g = 0.1; gfx_b = 0.12; gfx_a = 1;
+      gfx_rect(ddX, ddY+ddH, ddW, ddListH);
+
+      ddi = 0;
+      loop(NUMR,
+        ddRowY = ddY + ddH + ddi*ddRowH;
+        pointInRect(mouse_x, mouse_y, ddX, ddRowY, ddW, ddRowH) ? (
+          gfx_r = 0.22; gfx_g = 0.22; gfx_b = 0.26; gfx_a = 1;
+          gfx_rect(ddX, ddRowY, ddW, ddRowH);
+        );
+        ddi === sel ? (
+          gfx_r = THEME_R; gfx_g = THEME_G; gfx_b = THEME_B; gfx_a = 0.18;
+          gfx_rect(ddX, ddRowY, ddW, ddRowH);
+          gfx_a = 1;
+        );
+        hsv2rgb(r_hue[ddi], 0.6, 1);
+        gfx_rect(ddX+6, ddRowY+ddRowH*0.5-5, 10, 10);
+        gfx_r = 0.9; gfx_g = 0.9; gfx_b = 0.9; gfx_a = 1;
+        gfx_x = ddX + 22; gfx_y = ddRowY + ddRowH*0.5 - 4;
+        gfx_drawstr(NAME_BASE + ddi);
+        ddi += 1;
+      );
+
+      gfx_r = 0.4; gfx_g = 0.4; gfx_b = 0.45; gfx_a = 1;
+      gfx_rect(ddX, ddY+ddH, ddW, ddListH, 0);
+    );
+  );
+
+  prevMouseDown = mouseDown;
+
+@serialize
+  // Persist per-rhythm config across project/preset save+load: enabled/sides/hue/lock
+  // (which rhythms are exempt from autoconfigure), and each rhythm's display name.
+  // Everything else (flash/edge/envelope/detector state, "seen"/hit-streak tracking,
+  // UI state) is transient and safely re-derives itself.
+  file_mem(0, r_enabled,     NUMR);
+  file_mem(0, r_sides,       NUMR);
+  file_mem(0, r_hue,         NUMR);
+  file_mem(0, r_lock,        NUMR);
+  szi = 0;
+  loop(NUMR,
+    file_string(0, NAME_BASE + szi);
+    szi += 1;
+  );
