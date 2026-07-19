@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="Blue-Kachina's REAPER Plugins" commit="c9c8b7669673a7bc3a6a382e68e5034cb80beb0d">
+<index version="1" name="Blue-Kachina's REAPER Plugins" commit="f6096102b37c3120463d757d837014e96a257d4a">
   <category name="Effects/loopsamplers">
     <reapack name="ultra8.jsfx" type="effect" desc="Ultra8 Looper">
       <metadata>
@@ -69,6 +69,23 @@
       <version name="1.0.0" author="Blue Kachina" time="2026-07-18T20:13:00Z">
         <changelog><![CDATA[Initial ReaPack release.]]></changelog>
         <source>https://github.com/Blue-Kachina/reaper-plugins/raw/2596b8e33012e60410ac71dea196c4acccc8371d/Effects/midi/MidiNoteFilterByDrumType.jsfx</source>
+      </version>
+    </reapack>
+  </category>
+  <category name="Effects/Utilities">
+    <reapack name="GrandPaulERhythm.jsfx" type="effect" desc="GrandPaul eRhythm">
+      <metadata>
+        <description><![CDATA[{\rtf1\ansi\deff0{\fonttbl{\f0 \fswiss Helvetica;}{\f1 \fmodern Courier;}}
+{\colortbl;\red255\green0\blue0;\red0\green0\blue255;}
+\widowctrl\hyphauto
+
+{\pard \ql \f0 \sa180 \li0 \fi0 GrandPaul eRhythm is a polyrhythm visualizer for REAPER. Each input channel (audio and/or MIDI) becomes its own concentric rhythm shape, with a ball riding the polygon's edges and landing on a corner every beat -- the number of corners is auto-detected from the incoming signal against the project's tempo and time signature, and channels configure themselves automatically as they start and stop.\par}
+}
+]]></description>
+      </metadata>
+      <version name="1.0.0" author="Blue Kachina" time="2026-07-19T20:03:40Z">
+        <changelog><![CDATA[Initial ReaPack release.]]></changelog>
+        <source>https://github.com/Blue-Kachina/reaper-plugins/raw/f6096102b37c3120463d757d837014e96a257d4a/Effects/Utilities/GrandPaulERhythm.jsfx</source>
       </version>
     </reapack>
   </category>
